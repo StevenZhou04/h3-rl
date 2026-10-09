@@ -1,0 +1,6 @@
+# Group reward example: pairwise win rate from a VLM judge (both orders), mixed with per-video terms.
+# Slower: ~2 x PAIRS_PER_MEMBER judgments per rollout.
+combine: weighted_z
+video: {think_winrate: 1.0, va_ta: 0.5, flow_motion: 0.3}
+audio: {}
+sync: {}
