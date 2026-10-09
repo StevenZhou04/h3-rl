@@ -4,7 +4,8 @@ Resolves the experiment config (algorithm + reward + data + run), encodes any pr
 starts exactly the reward workers the reward config needs, optionally runs a 2-iteration smoke test with pass/fail
 checks, then trains with torchrun (h3rl.train). Overrides use dotted keys: run.iters=50 algo.lr=5e-5 run.train_gpus=[0,1].
 Multi-node: start the same command on every node with run.nnodes=N run.node_rank=i run.master_addr=<node 0 IP>
-(scripts/launch_multinode.sh does this over ssh). Rewards run on each node by default; run.reward_service=http://host:8800
+(scripts/launch_multinode.sh does this over ssh). Node 0 writes run.out (metrics, checkpoints); node i > 0 writes run.out/node<i>,
+so run.out and the text cache may sit on a filesystem the nodes share. Rewards run on each node by default; run.reward_service=http://host:8800
 sends them to h3rl.rewards.service on dedicated reward nodes instead.
 Nothing here is algorithm-specific: the algorithm's config section is passed to it unchanged.
 """
@@ -99,11 +100,13 @@ def main():
     if len(sys.argv) < 2: sys.exit(__doc__)
     c = load_config(sys.argv[1], sys.argv[2:]); out = Path(c["run"]["out"]).expanduser()
     if not out.is_absolute(): out = REPO / out
+    rank = int(c["run"].get("node_rank", 0))
+    if int(c["run"].get("nnodes", 1)) > 1 and rank > 0: out = out / f"node{rank}"   # own queue, logs and rollouts when run.out is on shared storage
     out.mkdir(parents=True, exist_ok=True); (out / "config.resolved.yaml").write_text(OmegaConf.to_yaml(OmegaConf.create(c)))
     encode_missing(c, out, c["run"]["train_gpus"])
-    if c["run"].get("smoke", True):
+    if c["run"].get("smoke", True) and not c["run"].get("resume"):
         rc, peak = train(c, out / "smoke", 2, 100, out / "smoke" / "train.log", smoke=True)
-        if int(c["run"].get("node_rank", 0)) == 0: ok, msg = smoke_check(out / "smoke", c, peak)    # metrics live on the head node
+        if rank == 0: ok, msg = smoke_check(out / "smoke", c, peak)    # metrics live on the head node
         else:
             tot = int(subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits", "-i", str(c["run"]["train_gpus"][0])], capture_output=True, text=True).stdout.strip() or 0)
             ok = rc == 0 and (not tot or peak < 0.96 * tot); msg = f"{'OK' if ok else 'FAIL'} (node {c['run']['node_rank']}: training rc {rc}, peak MiB {peak}/{tot})"

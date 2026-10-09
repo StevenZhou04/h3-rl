@@ -26,3 +26,9 @@ check("registry: pairwise judge is a group worker", WORKERS["pairwise_think"].ge
 check("algorithms registered", {"nft", "grpo"} <= set(ALGORITHMS), f"{sorted(ALGORITHMS)}")
 if FAILS: print(f"FAILED: {FAILS}"); sys.exit(1)
 print("ALL PASS")
+
+# score_batch: one iteration is scored against the same statistics, so equal raw scores get equal rewards
+cb = make_combiner({"video": {"a": 1.0}})
+out = cb.score_batch([({"a": x}, {}, False) for x in [1.0, 2.0, 1.0, 1.0]])
+assert out[0]["video"] == out[2]["video"] == out[3]["video"] < out[1]["video"], [o["video"] for o in out]
+print("score_batch ok", [round(o["video"], 3) for o in out])

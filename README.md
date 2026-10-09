@@ -55,6 +55,10 @@ ports (on AWS: a security-group rule allowing all traffic from the group itself,
 by default; `run.reward_service: http://<host>:8800` sends them to `python -m h3rl.rewards.service` on dedicated
 reward nodes instead, so every training GPU trains.
 
+The repo, `run.out` and the text cache may live on storage the nodes share (NFS, FSx). Node 0 writes `run.out`
+(metrics, checkpoints) and node i > 0 writes `run.out/node<i>` (its reward queue, logs and rollouts), so nodes never
+write the same files. When launching from a machine other than the nodes, set `H3RL_REPO` to the repo path on the nodes.
+
 ## Configs
 
 An experiment file names an algorithm config and a reward config and sets data and run options:

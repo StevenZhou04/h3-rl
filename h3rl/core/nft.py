@@ -103,12 +103,13 @@ def decode_and_write(models: dict, video_lat: torch.Tensor, audio_lat: torch.Ten
 
 
 
-def group_r(values: list, z_floor: float, global_sd: float | None = None) -> list:
-    """NFT eq.: r = 0.5 + 0.5 clip((R - mean_group) / Z, -1, 1); Z = max(global sd, group sd, floor)."""
-    arr = np.array([v for v in values if v is not None], dtype=np.float64)
-    if len(arr) < 2: return [0.5 if v is not None else None for v in values]
+def group_r(values: list, z_floor: float, global_sd: float | None = None, worst: float = -10.0) -> list:
+    """NFT eq.: r = 0.5 + 0.5 clip((R - mean_group) / Z, -1, 1); Z = max(global sd, group sd, floor).
+    Gated or broken rollouts (R <= worst) get r = 0 and are left out of the group mean and sd."""
+    arr = np.array([v for v in values if v is not None and v > worst], dtype=np.float64)
+    if len(arr) < 2: return [None if v is None else (0.0 if v <= worst else 0.5) for v in values]
     Z = max(float(arr.std()), z_floor, float(global_sd) if global_sd else 0.0); m = float(arr.mean())
-    return [None if v is None else float(0.5 + 0.5 * np.clip((v - m) / Z, -1.0, 1.0)) for v in values]
+    return [None if v is None else (0.0 if v <= worst else float(0.5 + 0.5 * np.clip((v - m) / Z, -1.0, 1.0))) for v in values]
 
 
 # ----------------------------------------------------------------------------- update

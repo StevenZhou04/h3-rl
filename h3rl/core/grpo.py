@@ -330,6 +330,12 @@ def decode_rollout_to_video(video_latents: torch.Tensor, audio_latents: torch.Te
 
 
 
+def _seeded_cpu_generator() -> torch.Generator:
+    """CPU generator for the initial noise, seeded from the global RNG so every rollout draws a fresh x_T
+    (an unseeded torch.Generator always starts from the same default seed)."""
+    return torch.Generator(device="cpu").manual_seed(int(torch.randint(0, 2**62, (1,)).item()))
+
+
 def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConfig, device: torch.device,
                   schedule=None, trust_refs: dict | None = None):
     """Generate cfg.group_size stochastic rollouts for one prompt at the CURRENT
@@ -371,7 +377,7 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
         shared_latents = initialize_target_latents(
             video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
             audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames),
-            generator=torch.Generator(device="cpu"), device=device,
+            generator=_seeded_cpu_generator(), device=device,
         )
 
     trajectories = []
@@ -392,7 +398,7 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
             video, audio = initialize_target_latents(
                 video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
                 audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames),
-                generator=torch.Generator(device="cpu"),
+                generator=_seeded_cpu_generator(),
                 device=device,
             )
         steps_record = []

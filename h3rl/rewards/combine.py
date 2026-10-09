@@ -40,6 +40,7 @@ class Combiner:
     def __init__(self, rc: dict): self.rc = rc
     def terms(self) -> set[str]: raise NotImplementedError
     def __call__(self, axes: dict, guard: dict, has_audio: bool) -> dict: raise NotImplementedError   # -> {"video", "audio", "axes", "gated"}
+    def score_batch(self, items: list) -> list: return [self(*x) for x in items]   # items: (axes, guard, has_audio) of one iteration
     def state(self) -> dict: return {}
     def load(self, s: dict): pass
 
@@ -61,13 +62,27 @@ class WeightedZ(Combiner):
             if k in axes: tot += w * self.rz.z(k, axes[k]); wsum += abs(w); n += 1
         return (tot / wsum if wsum else 0.0), n, wsum
 
-    def __call__(self, axes, guard, has_audio):
+    def _clean(self, axes):
         axes = dict(axes)
         if "desync" in axes and axes.get("sync_conf", 0.0) < self.sync_conf_min: axes.pop("desync")   # uninformative estimate
+        return axes
+
+    def _observe(self, axes):
         for k, v in axes.items(): self.rz.update(k, v)
         for k in self.floors:                                     # freeze each floor's reference after the warm-up
             if k in axes and self.seen.get(k, 0) < self.warmup:
                 self.seen[k] = self.seen.get(k, 0) + 1; self.ref[k] = self.ref.get(k, 0.0) + (axes[k] - self.ref.get(k, 0.0)) / self.seen[k]
+
+    def score_batch(self, items):
+        """Update the running statistics with the whole iteration first, then score every rollout against the same stats."""
+        cleaned = [(self._clean(a), g, h) for a, g, h in items]
+        for a, _, _ in cleaned: self._observe(a)
+        return [self._score(a, g, h) for a, g, h in cleaned]
+
+    def __call__(self, axes, guard, has_audio):
+        axes = self._clean(axes); self._observe(axes); return self._score(axes, guard, has_audio)
+
+    def _score(self, axes, guard, has_audio):
         Rv, nv, wv = self._branch(self.rc.get("video"), axes)
         fl = [(w, k) for k, w in self.floors.items() if k in axes and self.seen.get(k, 0) >= self.warmup and self.rz.sd(k)]
         if fl:

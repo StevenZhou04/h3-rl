@@ -42,4 +42,8 @@ check("(f'') sigma=1 first step: precise std finite, > 0, == first-order fallbac
 eq = GradNormEqualizer(4); check("(g) equalizer returns 1.0 without data", eq.scale(0) == 1.0)
 for t, nrm in ((0, 1.0), (1, 1.0), (2, 2.0), (3, 1.0)): eq.update(t, nrm)
 check("(g') 2x-median timestep scaled by ~0.5", abs(eq.scale(2) - 0.5) < 1e-3 and abs(eq.scale(0) - 1.0) < 1e-3, f"{eq.scale(2):.3f}, {eq.scale(0):.3f}")
+from h3rl.rewards.combine import WORST     # a gated rollout gets r = 0 and does not compress the rest of its group
+plain = T.group_r([1.0, 0.9, 0.5, 0.1, 0.0], 0.05); gated = T.group_r([1.0, 0.9, 0.5, 0.1, 0.0, WORST], 0.05)
+check("(d2) gated member -> 0, others unchanged", gated[-1] == 0.0 and all(abs(p - g) < 1e-12 for p, g in zip(plain, gated[:-1])))
+check("(d3) gated / missing in a tiny group", T.group_r([0.3, WORST, None], 0.05) == [0.5, 0.0, None])
 print("ALL PASS" if ok_all else "FAILURES"); sys.exit(0 if ok_all else 1)

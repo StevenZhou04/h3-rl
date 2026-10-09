@@ -65,6 +65,7 @@ def main():
     tc = f"{paths.CACHE}/text_cache"; pool = [json.loads(l) for l in open(d["pool"])]; pool = [r for r in pool if os.path.exists(f"{tc}/{r['pid']}.pt")]
     log(f"algo={ac['name']} infer_steps={infer_steps} workers={workers} pool={len(pool)} world={world}")
     timeout = float(run.get("reward_timeout_s", 5400)); rq = make_backend(run, Q); history = []
+    tag = f"{time.strftime('%m%d%H%M%S')}{os.getpid() % 10000:04d}"   # reward keys never collide with an earlier run's results
 
     for it in range(a.start_iter, a.iters):
         t0 = time.time(); network.set_multiplier(1.0); transformer.eval()
@@ -80,7 +81,7 @@ def main():
             ctx = build_context(pr["prompt"], hs, tags, lcfg, device, task=pr["task"], condition_latent=latent, condition_geometry=geometry,
                                 condition_path=pr.get("image") or "first_frame.png", condition_frame=cond_px)
             for k, s in enumerate(algo.rollout(ctx, pr, it * 100003 + rank * 1009 + j * 101)):
-                key = f"it{it:04d}_r{rank}_p{j}_k{k}"; mp4 = f"{out}/rollouts/it{it:04d}/{key}.mp4"; os.makedirs(os.path.dirname(mp4), exist_ok=True)
+                key = f"{tag}_it{it:04d}_r{rank}_p{j}_k{k}"; mp4 = f"{out}/rollouts/it{it:04d}/{key}.mp4"; os.makedirs(os.path.dirname(mp4), exist_ok=True)
                 s.update(key=key, mp4=mp4, guard=decode_and_write(models, s["video"], s["audio"], mp4, device), ctx=ctx, prompt=pr, group=j)
                 samples.append(s); json.dump({"key": key, "pid": pr.get("pid"), "prompt": pr.get("prompt"), "guard": s["guard"]}, open(mp4[:-4] + ".json", "w"))
         t_roll = time.time() - t0
@@ -90,15 +91,17 @@ def main():
         for s in samples: rq.submit(s["key"], s["mp4"], rtext(s), per_video, meta(s))
         gkeys = {}
         for j in sorted({s["group"] for s in samples}):
-            grp = [s for s in samples if s["group"] == j]; gk = f"it{it:04d}_r{rank}_p{j}"; gkeys[j] = gk
+            grp = [s for s in samples if s["group"] == j]; gk = f"{tag}_it{it:04d}_r{rank}_p{j}"; gkeys[j] = gk
             for wk in per_group: rq.submit_group(gk, [{"key": s["key"], "mp4": s["mp4"]} for s in grp], rtext(grp[0]), wk, meta(grp[0]))
         got = rq.collect([s["key"] for s in samples], per_video, timeout) if per_video else {s["key"]: {} for s in samples}
         ggot = rq.collect(list(gkeys.values()), per_group, timeout) if per_group else {}
+        batch = []
         for s in samples:
             axes = {}
             for res in got[s["key"]].values(): axes.update({k: float(v) for k, v in (res.get("scores") or {}).items()})
             for res in ggot.get(gkeys[s["group"]], {}).values(): axes.update({k: float(v) for k, v in ((res.get("members") or {}).get(s["key"]) or {}).items()})
-            s["R"] = comb(axes, s["guard"], bool(s["prompt"].get("has_audio", True)))
+            batch.append((axes, s["guard"], bool(s["prompt"].get("has_audio", True))))
+        for s, R in zip(samples, comb.score_batch(batch)): s["R"] = R
         t_rew = time.time() - t0 - t_roll
         mt = algo.update(samples, it)
         Rv = [s["R"]["video"] for s in samples if s["R"]["video"] is not None]

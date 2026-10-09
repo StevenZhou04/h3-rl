@@ -8,6 +8,7 @@ import numpy as np, torch
 from h3rl.algos.base import Algorithm, register
 from h3rl.core.grpo import GRPOConfig, rollout_group, grpo_loss_for_trajectory, GradNormEqualizer
 from h3rl.core.dist import average_gradients
+from h3rl.rewards.combine import WORST
 
 
 @register("grpo")
@@ -38,10 +39,15 @@ class GRPO(Algorithm):
 
     def update(self, samples, iteration):
         T, cfg = self.T, self.cfg
-        rewards = np.array([(s["R"]["video"] or 0.0) + (s["R"]["audio"] or 0.0) for s in samples]); adv = np.zeros_like(rewards)
+        # missing reward (timeout, failed worker): advantage 0; gated or broken: fixed -1; the rest are normalised
+        # within their group, and only they enter the mean and std
+        rewards = np.array([np.nan if s["R"]["video"] is None and s["R"]["audio"] is None else (s["R"]["video"] or 0.0) + (s["R"]["audio"] or 0.0)
+                            for s in samples]); adv = np.zeros_like(rewards)
+        bad = np.array([s["R"]["video"] == WORST for s in samples]); ok = ~np.isnan(rewards) & ~bad
         for g in sorted({s["group"] for s in samples}):
-            idx = [i for i, s in enumerate(samples) if s["group"] == g]; adv[idx] = rewards[idx] - rewards[idx].mean()
-        adv = adv / max(float(rewards.std()), 1e-3)
+            idx = np.array([i for i, s in enumerate(samples) if s["group"] == g and ok[i]], dtype=int)
+            if len(idx) >= 2: adv[idx] = rewards[idx] - rewards[idx].mean()
+        adv = adv / max(float(rewards[ok].std()) if ok.sum() >= 2 else 0.0, 1e-3); adv[bad] = -1.0
         T.transformer.train(); self.opt.zero_grad(set_to_none=True); losses, ratios = [], []
         prev = [p.detach().clone() for p in T.params]
         for i, s in enumerate(samples):
@@ -51,5 +57,5 @@ class GRPO(Algorithm):
         gn = float(torch.nn.utils.clip_grad_norm_(T.params, self.max_grad_norm)); self.opt.step(); self.opt.zero_grad(set_to_none=True)
         if cfg.tr_vel_beta > 0: self.ref_vel = prev
         if self.ref_pos is not None and (iteration + 1) % cfg.ref_refresh_every == 0: self.ref_pos = [p.detach().clone() for p in T.params]
-        return dict(loss=float(np.mean(losses)), grad_norm=gn, reward_std=float(rewards.std()),
+        return dict(loss=float(np.mean(losses)), grad_norm=gn, reward_std=float(rewards[ok].std()) if ok.any() else 0.0,
                     ratio_dev_p95=float(np.percentile(np.abs(np.array(ratios) - 1.0), 95)) if ratios else 0.0)

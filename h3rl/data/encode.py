@@ -1,7 +1,7 @@
 """Phase A for NFT: encode every pool prompt once with the NVFP4 text encoder into per-prompt files
 (text_cache/<pid>.pt = (hidden_states, token_tags) on CPU). Resumable; fl2va prompts include their image."""
 from h3rl.paths import TEXT_ENCODER
-import argparse, json, os, sys, time, torch
+import argparse, json, os, socket, sys, time, torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser(); ap.add_argument("--pool", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--text_encoder", default=TEXT_ENCODER)
@@ -18,6 +18,7 @@ t0 = time.time()
 for i, r in enumerate(todo):
     fr = load_image_frames(r["image"], width=a.size[1], height=a.size[0]) if r["task"] == "fl2va" else None
     h, t = encode_prompt(r["prompt"], proc, te, dev, task=r["task"], condition_frames=fr)
-    torch.save((h.cpu(), t.cpu()), f"{a.out}/{r['pid']}.pt.tmp"); os.replace(f"{a.out}/{r['pid']}.pt.tmp", f"{a.out}/{r['pid']}.pt")
+    tmp = f"{a.out}/{r['pid']}.pt.{socket.gethostname()}.{os.getpid()}.tmp"     # unique: nodes sharing the cache may encode the same prompt
+    torch.save((h.cpu(), t.cpu()), tmp); os.replace(tmp, f"{a.out}/{r['pid']}.pt")
     if i % 200 == 0: print(f"{i}/{len(todo)} {(time.time()-t0)/(i+1):.2f}s/prompt", flush=True)
 print("DONE", flush=True)
