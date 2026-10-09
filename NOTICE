@@ -1,0 +1,9 @@
+h3rl
+Copyright 2026 h3rl contributors. Licensed under the Apache License, Version 2.0.
+
+The MiniMax-H3 model code is provided by musubi-tuner (https://github.com/kohya-ss/musubi-tuner, Apache-2.0), which h3rl
+installs as a pinned dependency. Model weights and reward models are not included; scripts/download_weights.py fetches them
+from their original sources, each under its own license.
+
+Methods implemented: DiffusionNFT (Zheng et al., 2025), Flow-GRPO (Liu et al., 2025), SAGE-GRPO (arXiv 2603.21872).
+Reward models used through workers: VideoAlign/VideoReward, HPSv3++, SoliReward, UnifiedReward.

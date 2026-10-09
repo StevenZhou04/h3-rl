@@ -1,0 +1,14 @@
+# Flow-GRPO with the SAGE-GRPO fixes: precise SDE step variance, per-timestep gradient equalizer, dual trust region.
+name: grpo
+lr: 1.0e-4
+group_size: 8
+prompts_per_step: 1
+noise_level: 0.7
+clip_range: 0.2
+kl_beta: 0.0
+sde_precise: true
+grad_equalizer: true
+tr_pos_beta: 0.02
+tr_vel_beta: 0.01
+ref_refresh_every: 10
+grad_steps: 10         # backprop through this many of the recorded sampling steps per rollout (0 = all; all 29 is ~3x slower)

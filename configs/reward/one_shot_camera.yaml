@@ -1,0 +1,4 @@
+# For prompts that ask for one continuous camera move: mix_v1 plus a hard-cut penalty.
+video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.3, flow_motion: 0.5, cut_free: 0.5}
+audio: {}
+sync: {}

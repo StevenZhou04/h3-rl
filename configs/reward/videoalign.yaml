@@ -1,0 +1,6 @@
+# VideoAlign alone (visual quality, motion quality, text alignment). va_mq prefers frozen clips (no motion, no motion
+# artifacts: 81% of frozen copies beat the original in scripts/reward_sanity.py), so a coherent-motion term keeps
+# the policy from learning to stop moving.
+video: {va_vq: 1.0, va_mq: 1.0, va_ta: 1.0, flow_motion: 0.5}
+audio: {}
+sync: {}

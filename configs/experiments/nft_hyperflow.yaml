@@ -1,0 +1,20 @@
+# DiffusionNFT on the 8-step HyperFlow-distilled MiniMax-H3 (scripts/download_weights.py --hyperflow).
+# Note: RL directly on a step-distilled model can wear down its few-step quality; watch frame quality across checkpoints.
+algo: configs/algo/nft.yaml
+reward: configs/reward/mix_v1.yaml
+model:
+  hyperflow: default       # $H3RL_MODELS/loras/hyperflow_musubi.safetensors; or a path to another converted HyperFlow LoRA
+  infer_steps: null        # taken from the HyperFlow file (8)
+data:
+  pool: prompts/example_pool.jsonl
+  frames: [124, 243]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/nft_hyperflow
+  iters: 30
+  save_every: 5
+  train_gpus: [0, 1, 2]
+  reward_gpus: [3]
+  port: 29763
+  smoke: true

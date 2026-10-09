@@ -1,0 +1,11 @@
+# DiffusionNFT (Zheng et al., 2025): forward-process, likelihood-free RL on the plain ODE sampler.
+name: nft
+lr: 1.0e-4
+beta: 0.1               # NFT guidance strength
+epochs_per_batch: 2     # off-policy reuse of each rollout batch
+group_size: 8           # rollouts per prompt
+prompts_per_step: 1     # prompts per GPU per iteration
+adv_clip_max: 5.0       # r = 0.5 + clip(A, +-5) / 10, A = (R - group mean) / global std (reference defaults)
+global_std: true
+kl_beta: 1.0e-4         # KL to the base model (reference train.beta)
+timesteps_per_sample: 1 # reference: every sampler step (set to infer_steps; ~8-30x the update cost)

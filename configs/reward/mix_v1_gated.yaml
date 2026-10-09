@@ -1,0 +1,8 @@
+# mix_v1 with the combiner options: a hard-cut gate for one-shot prompts and a floor on visual quality.
+combine: weighted_z
+video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.3, flow_motion: 0.5}
+audio: {}
+sync: {}
+gates: {cut_free: {min: 0}}     # a rollout with a detected hard cut in a one-shot prompt ranks last in its group
+floors: {va_vq: 0.5}            # penalise visual quality only when it drops below its start-of-training level
+floor_warmup: 64

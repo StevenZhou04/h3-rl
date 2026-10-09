@@ -1,0 +1,5 @@
+# Text alignment (two judges) + frame quality + coherent motion. Each term is z-scored over a running window,
+# combined with these weights, then normalised within each group of rollouts.
+video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.3, flow_motion: 0.5}
+audio: {}
+sync: {}

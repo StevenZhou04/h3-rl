@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+runs/
+*.safetensors
+*.mp4
+*.pt

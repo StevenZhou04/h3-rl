@@ -1,0 +1,19 @@
+# DiffusionNFT on the base MiniMax-H3 with the mix_v1 reward, 5 s and 10 s clips alternating.
+algo: configs/algo/nft.yaml
+reward: configs/reward/mix_v1.yaml
+model:
+  hyperflow: ""            # "" = base model, 30-step sampler; a HyperFlow LoRA path = 8-step distilled model
+  infer_steps: null        # default: 30 on the base model, 8 with HyperFlow
+data:
+  pool: prompts/example_pool.jsonl
+  frames: [124, 243]       # 17n+5 frames at 24 fps: 5.2 s and 10.1 s, alternated per iteration
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}   # smaller canvas for the long clips (memory)
+run:
+  out: runs/nft_mix
+  iters: 30
+  save_every: 5
+  train_gpus: [0, 1, 2]
+  reward_gpus: [3]
+  port: 29761
+  smoke: true              # run 2 iterations with pass/fail checks first
