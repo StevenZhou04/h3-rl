@@ -46,4 +46,23 @@ from h3rl.rewards.combine import WORST     # a gated rollout gets r = 0 and does
 plain = T.group_r([1.0, 0.9, 0.5, 0.1, 0.0], 0.05); gated = T.group_r([1.0, 0.9, 0.5, 0.1, 0.0, WORST], 0.05)
 check("(d2) gated member -> 0, others unchanged", gated[-1] == 0.0 and all(abs(p - g) < 1e-12 for p, g in zip(plain, gated[:-1])))
 check("(d3) gated / missing in a tiny group", T.group_r([0.3, WORST, None], 0.05) == [0.5, 0.0, None])
+
+# the loss actually used (nft_branch) equals the reference implementation's formula (DiffusionNFT train_nft_sd3.py),
+# which uses v_ref = noise - x0 and x0_pred = x_t - t v_ref, with the policy term scaled by adv_clip_max / beta
+x0 = torch.randn(1, 6, 4); eps = torch.randn(1, 6, 4); s = 0.6; xt = (1 - s) * x0 + s * eps
+vo_h3, vt_h3 = torch.randn(1, 6, 4), torch.randn(1, 6, 4)                      # H3 convention: v = x0 - noise
+bb, rr, clipc = 0.1, 0.3, 5.0
+ours = T.nft_branch(vo_h3, vt_h3, xt, s, x0, rr, bb)
+old_r, fwd_r = -vo_h3, -vt_h3                                                  # reference convention
+pos = bb * fwd_r + (1 - bb) * old_r; neg = (1.0 + bb) * old_r - bb * fwd_r
+x0p, x0n = xt - s * pos, xt - s * neg
+wp = (x0p.double() - x0.double()).abs().mean(dim=(1, 2), keepdim=True).clip(min=1e-5); wn = (x0n.double() - x0.double()).abs().mean(dim=(1, 2), keepdim=True).clip(min=1e-5)
+ref = ((rr * ((x0p - x0) ** 2 / wp).mean(dim=(1, 2)) / bb + (1 - rr) * ((x0n - x0) ** 2 / wn).mean(dim=(1, 2)) / bb) * clipc).mean()
+check("(h) nft_branch == reference loss / (adv_clip_max / beta)", torch.allclose(ours.double() * clipc / bb, ref, rtol=1e-5), f"{float(ours) * clipc / bb:.6f} vs {float(ref):.6f}")
+vt_g = vt_h3.clone().requires_grad_(True); gz = torch.autograd.grad(T.nft_branch(vo_h3, vt_g, xt, s, x0, 0.4, 0.0), vt_g)[0]
+check("(h') beta=0 -> zero grad", float(gz.abs().max()) == 0.0)
+# reference reward mapping: with a global sd, a group whose spread is small relative to it stays near 0.5
+rg = T.group_r([0.10, 0.12, 0.08, 0.11], 0.05, global_sd=1.0, clip=5.0)
+check("(i) global sd + clip 5: noise-level group stays near 0.5", all(abs(x - 0.5) < 0.01 for x in rg), str([round(x, 4) for x in rg]))
+check("(i') saturates at A = +-5", T.group_r([0.0, 10.0], 0.05, global_sd=1.0, clip=5.0) == [0.0, 1.0])
 print("ALL PASS" if ok_all else "FAILURES"); sys.exit(0 if ok_all else 1)

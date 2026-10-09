@@ -44,7 +44,10 @@ class NFTConfig:
     ema_max: float = 0.5
     sigma_jitter: float = 0.5        # fraction of the inter-sigma gap used as uniform jitter
     audio_loss_weight: float = 1.0
-    z_floor: float = 0.05            # floor on the reward scale Z (max-group-std idea)
+    z_floor: float = 0.05            # floor on the reward scale
+    adv_clip_max: float = 5.0        # reference: r = 0.5 + clip(A, +-c) / 2c with A = (R - group mean) / global std
+    kl_beta: float = 1e-4            # reference train.beta: KL (velocity MSE) to the base model, relative to the unscaled policy loss
+    timesteps_per_sample: int = 1    # reference trains every sampler timestep (= infer_steps); 1 is ~infer_steps x cheaper
 
     def as_grpo(self) -> GRPOConfig:
         return GRPOConfig(group_size=self.group_size, prompts_per_step=self.prompts_per_step, infer_steps=self.infer_steps, noise_level=0.0,
@@ -103,13 +106,15 @@ def decode_and_write(models: dict, video_lat: torch.Tensor, audio_lat: torch.Ten
 
 
 
-def group_r(values: list, z_floor: float, global_sd: float | None = None, worst: float = -10.0) -> list:
-    """NFT eq.: r = 0.5 + 0.5 clip((R - mean_group) / Z, -1, 1); Z = max(global sd, group sd, floor).
-    Gated or broken rollouts (R <= worst) get r = 0 and are left out of the group mean and sd."""
+def group_r(values: list, z_floor: float, global_sd: float | None = None, worst: float = -10.0, clip: float = 1.0) -> list:
+    """r = 0.5 + clip(A, -clip, clip) / (2 clip), A = (R - group mean) / Z.
+    With global_sd (the reference: global_std=True, clip = adv_clip_max = 5): Z = max(global sd, floor), so a group without
+    real differences stays near 0.5. Without it: Z = max(group sd, floor). Gated or broken rollouts (R <= worst) get r = 0
+    and are left out of the group mean and of the sd."""
     arr = np.array([v for v in values if v is not None and v > worst], dtype=np.float64)
     if len(arr) < 2: return [None if v is None else (0.0 if v <= worst else 0.5) for v in values]
-    Z = max(float(arr.std()), z_floor, float(global_sd) if global_sd else 0.0); m = float(arr.mean())
-    return [None if v is None else (0.0 if v <= worst else float(0.5 + 0.5 * np.clip((v - m) / Z, -1.0, 1.0))) for v in values]
+    Z = max(float(global_sd) if global_sd else float(arr.std()), z_floor); m = float(arr.mean())
+    return [None if v is None else (0.0 if v <= worst else float(0.5 + 0.5 * np.clip((v - m) / Z / clip, -1.0, 1.0))) for v in values]
 
 
 # ----------------------------------------------------------------------------- update
@@ -141,14 +146,39 @@ def draw_sigma(grid: list[float], jitter: float, rng: random.Random) -> float:
 
 def nft_loss(transformer, network, params: list, old_params: list, sample: dict, ctx: dict, r_video: float | None, r_audio: float | None,
              cfg: NFTConfig, schedule, device: torch.device, rng: random.Random, loss_scale: float = 1.0) -> dict:
-    """One sample's reward-weighted FM loss; backward() is called here (grads accumulate into the LoRA)."""
+    """One sample's NFT loss at cfg.timesteps_per_sample noise levels; backward() per level (grads accumulate into the LoRA)."""
+    n = max(1, int(cfg.timesteps_per_sample)); parts = []
+    if n >= len(schedule.video) - 1:                              # every sampler step, as the reference
+        levels = [(float(schedule.video[i]), float(schedule.audio[i])) for i in range(len(schedule.video) - 1)]
+    else:
+        levels = [(draw_sigma(schedule.video, cfg.sigma_jitter, rng), draw_sigma(schedule.audio, cfg.sigma_jitter, rng)) for _ in range(n)]
+    for sv, sa in levels:
+        parts.append(_nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video, r_audio, cfg, device, rng,
+                                  loss_scale / len(levels), sv, sa))
+    out = {k: float(np.mean([p[k] for p in parts if k in p])) for k in parts[0]}
+    return out
+
+
+def nft_branch(vo, vt, xt, sigma: float, x0, r: float, beta: float):
+    """Reference DiffusionNFT policy loss for one branch (H3 convention v = x0 - noise, so x0(v) = x_t + sigma v):
+    r |x0(v+) - x0|^2 / w+ + (1 - r) |x0(v-) - x0|^2 / w-,  v+- = (1 -+ beta) v_old +- beta v_theta,  w = mean|x0(v) - x0| (detached)."""
+    x_pos = xt + sigma * ((1 - beta) * vo + beta * vt); x_neg = xt + sigma * ((1 + beta) * vo - beta * vt)
+    w_pos = (x_pos - x0).abs().mean().detach().clamp_min(1e-5); w_neg = (x_neg - x0).abs().mean().detach().clamp_min(1e-5)
+    return r * ((x_pos - x0) ** 2).mean() / w_pos + (1 - r) * ((x_neg - x0) ** 2).mean() / w_neg
+
+
+def _nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video, r_audio, cfg, device, rng, loss_scale, sv, sa) -> dict:
+    """Reference DiffusionNFT loss at one noise level, in x0 space with per-sample adaptive weighting:
+        x0(v) = x_t + sigma v,  L = r |x0(v+) - x0|^2 / w+ + (1-r) |x0(v-) - x0|^2 / w-,  w = mean|x0(v) - x0| (detached)
+    plus kl_beta |v_theta - v_base|^2 (base = our LoRA off). The reference multiplies the policy term by adv_clip_max / beta;
+    we keep the policy term unscaled and scale the KL by beta / adv_clip_max instead (same ratio; Adam is scale invariant,
+    and grad clipping keeps its old meaning)."""
     layout = ctx["layout"]
     x0v, x0a = sample["video"].to(device), sample["audio"].to(device)
-    sv = draw_sigma(schedule.video, cfg.sigma_jitter, rng); sa = draw_sigma(schedule.audio, cfg.sigma_jitter, rng)
     gen = torch.Generator(device=device).manual_seed(rng.getrandbits(62))                 # rng is per rank: independent noise
     ev = torch.randn(x0v.shape, generator=gen, device=device, dtype=torch.float32); ea = torch.randn(x0a.shape, generator=gen, device=device, dtype=torch.float32)
     xtv = ((1.0 - sv) * x0v.float() + sv * ev).to(torch.bfloat16); xta = ((1.0 - sa) * x0a.float() + sa * ea).to(torch.bfloat16)
-    tv, ta = (x0v.float() - ev), (x0a.float() - ea)                                      # musubi's H3 target: latents - noise
+    tv = x0v.float() - ev                                                                 # musubi H3 target (latents - noise), for the fm metric
     vis = tuple(t.to(device) for t in sample["vis_cond"]); aud = tuple(t.to(device) for t in sample["aud_cond"])
     fwd = lambda: transformer(video_latents=xtv, audio_latents=xta, text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
                               layout=layout, model_t_video=1.0 - sv, model_t_audio=1.0 - sa, visual_condition_latents=vis, audio_condition_latents=aud,
@@ -158,15 +188,23 @@ def nft_loss(transformer, network, params: list, old_params: list, sample: dict,
         old = fwd(); vo_v, vo_a = old.video.float(), old.audio.float()
     if getattr(transformer, "gradient_checkpointing", False):
         xtv.requires_grad_(True); xta.requires_grad_(True)
+    ref_v = ref_a = None
+    if cfg.kl_beta > 0:
+        network.set_multiplier(0.0)
+        with torch.no_grad(): ref = fwd(); ref_v, ref_a = ref.video.float(), ref.audio.float(); del ref
+        network.set_multiplier(1.0)
     pred = fwd(); vt_v, vt_a = pred.video.float(), pred.audio.float()
-    b = cfg.beta
-    def branch(vo, vt, target, r):
-        vp = (1 - b) * vo + b * vt; vn = (1 + b) * vo - b * vt
-        return r * ((vp - target) ** 2).mean() + (1 - r) * ((vn - target) ** 2).mean()
+    b = cfg.beta; x0vf, x0af = x0v.float(), x0a.float()
+    branch = lambda vo, vt, xt, sigma, x0, r: nft_branch(vo, vt, xt.float(), sigma, x0, r, b)
+    kl_w = cfg.kl_beta * b / cfg.adv_clip_max
     loss = torch.zeros((), device=device); parts = {}
-    if r_video is not None: lv = branch(vo_v, vt_v, tv, r_video); loss = loss + lv; parts["loss_video"] = float(lv)
-    if r_audio is not None: la = branch(vo_a, vt_a, ta, r_audio); loss = loss + cfg.audio_loss_weight * la; parts["loss_audio"] = float(la)
+    if r_video is not None:
+        lv = branch(vo_v, vt_v, xtv, sv, x0vf, r_video); loss = loss + lv; parts["loss_video"] = float(lv)
+        if ref_v is not None: kv = ((vt_v - ref_v) ** 2).mean(); loss = loss + kl_w * kv; parts["kl_video"] = float(kv)
+    if r_audio is not None:
+        la = branch(vo_a, vt_a, xta, sa, x0af, r_audio); loss = loss + cfg.audio_loss_weight * la; parts["loss_audio"] = float(la)
+        if ref_a is not None: ka = ((vt_a - ref_a) ** 2).mean(); loss = loss + cfg.audio_loss_weight * kl_w * ka; parts["kl_audio"] = float(ka)
     if loss.requires_grad: (loss * loss_scale).backward()
     parts.update(loss=float(loss), sigma_v=sv, sigma_a=sa, fm_video=float(((vt_v - tv) ** 2).mean()))
-    del pred, old, vo_v, vo_a, vt_v, vt_a, loss
+    del pred, old, vo_v, vo_a, vt_v, vt_a, loss, ref_v, ref_a
     return parts

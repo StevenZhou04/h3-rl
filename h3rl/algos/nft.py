@@ -20,7 +20,9 @@ class NFT(Algorithm):
                              grad_accum=int(acfg.get("grad_accum", 4)), max_grad_norm=float(acfg.get("max_grad_norm", 1.0)),
                              ema_slope=float(acfg.get("ema_slope", 0.001)), ema_max=float(acfg.get("ema_max", 0.5)),
                              sigma_jitter=float(acfg.get("sigma_jitter", 0.5)), audio_loss_weight=float(acfg.get("audio_loss_weight", 1.0)),
-                             z_floor=float(acfg.get("z_floor", 0.05)))
+                             z_floor=float(acfg.get("z_floor", 0.05)), adv_clip_max=float(acfg.get("adv_clip_max", 5.0)),
+                             kl_beta=float(acfg.get("kl_beta", 1e-4)), timesteps_per_sample=int(acfg.get("timesteps_per_sample", 1)))
+        self.global_std = bool(acfg.get("global_std", True))
         self.old = [p.detach().clone() for p in T.params]
         self.opt = torch.optim.AdamW(T.params, lr=self.cfg.lr, betas=(0.9, 0.99), weight_decay=0.0)
         self.n_updates = 0
@@ -42,9 +44,11 @@ class NFT(Algorithm):
 
     def update(self, samples, iteration):
         T, cfg = self.T, self.cfg; self._canvas()
+        sd = {k: self._global_sd([s["R"][k] for s in samples]) if self.global_std else None for k in ("video", "audio")}
         for g in sorted({s["group"] for s in samples}):
             grp = [s for s in samples if s["group"] == g]
-            rv = group_r([s["R"]["video"] for s in grp], cfg.z_floor); ra = group_r([s["R"]["audio"] for s in grp], cfg.z_floor)
+            rv = group_r([s["R"]["video"] for s in grp], cfg.z_floor, sd["video"], clip=cfg.adv_clip_max)
+            ra = group_r([s["R"]["audio"] for s in grp], cfg.z_floor, sd["audio"], clip=cfg.adv_clip_max)
             for s, v, u in zip(grp, rv, ra): s["r_video"], s["r_audio"] = v, u
         T.transformer.train(); T.network.set_multiplier(1.0); self.opt.zero_grad(set_to_none=True)
         parts, n, gn = [], 0, 0.0
@@ -60,6 +64,15 @@ class NFT(Algorithm):
         rv = [s["r_video"] for s in samples if s["r_video"] is not None]
         return dict(loss=float(np.mean([p["loss"] for p in parts])), fm_video=float(np.mean([p["fm_video"] for p in parts])),
                     r_video_mean=float(np.mean(rv)) if rv else 0.0, grad_norm=gn, n_updates=float(self.n_updates))
+
+    def _global_sd(self, values):
+        """Std of every valid (not missing, not gated) reward of this iteration over all ranks (reference global_std)."""
+        from h3rl.rewards.combine import WORST
+        v = [float(x) for x in values if x is not None and x > WORST]
+        if self.T.world > 1:
+            import torch.distributed as dist
+            parts = [None] * self.T.world; dist.all_gather_object(parts, v); v = [x for p in parts for x in p]
+        return float(np.std(v)) if len(v) >= 2 else None
 
     def state(self): return {"n_updates": self.n_updates}
     def load(self, s): self.n_updates = int(s.get("n_updates", 0))
