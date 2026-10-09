@@ -16,6 +16,10 @@ worker processes, and trains a LoRA on the result.
 
 ## Setup
 
+**On a fresh AWS GPU node** (Amazon Linux 2023, e.g. p6-b200), one command sets up the NVMe volume, environments,
+weights and runs the tests: `curl -fsSL https://raw.githubusercontent.com/StevenZhou04/h3-rl/main/scripts/setup_aws_node.sh | bash`
+(`WITH_HYPERFLOW=1` adds the 8-step LoRA). Elsewhere:
+
 Linux, NVIDIA GPUs with enough memory for the bf16 model (B200/H200 class; one training rank per GPU), and
 [uv](https://docs.astral.sh/uv/).
 
@@ -41,6 +45,15 @@ python -m h3rl.launch configs/experiments/nft_mix.yaml reward=configs/reward/vid
 The launcher encodes prompts missing from the text cache, starts only the reward workers the reward needs, runs a
 2-iteration smoke test (finite loss and gradients, every reward term present, memory headroom), then trains.
 LoRA checkpoints, `metrics.jsonl` and the rollouts are written to `run.out`.
+
+### Multiple nodes
+
+Run the same experiment on every node with `run.nnodes`, `run.node_rank` and `run.master_addr` (node 0's private IP);
+`scripts/launch_multinode.sh hosts.txt <experiment.yaml>` does this over ssh. Nodes must reach each other on all TCP
+ports (on AWS: a security-group rule allowing all traffic from the group itself, which EFA needs anyway). Set
+`run.efa: true` on instances with EFA interfaces to route the gradient all-reduce over EFA. Rewards run on every node
+by default; `run.reward_service: http://<host>:8800` sends them to `python -m h3rl.rewards.service` on dedicated
+reward nodes instead, so every training GPU trains.
 
 ## Configs
 
@@ -170,7 +183,8 @@ every rollout of one prompt (`members`), and the result gives each member its ow
 - [ ] **More reward workers**: camera-trajectory geometry (per time segment), audio quality (Audiobox, CLAP) and
       audio-video sync, which need extra environments in `scripts/setup_env.sh`; VideoScore2 and the reasoning judges
       as per-video workers.
-- [ ] **Multi-node**: launch across nodes and serve reward models over the network instead of the shared-disk queue.
+- [x] **Multi-node**: launch across nodes, local or HTTP reward service (`run.reward_service`), optional EFA (`run.efa`).
+      Tested as two nodes on one machine; a real cross-node run and EFA are still to verify.
 
 ## Layout
 

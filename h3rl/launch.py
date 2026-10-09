@@ -45,8 +45,15 @@ def encode_missing(c: dict, out: Path, gpus):
     if any(p.wait() for p in procs): raise RuntimeError("prompt encoding failed")
 
 
+EFA_ENV = {   # NCCL over AWS EFA through the aws-ofi-nccl plugin shipped on AWS GPU images (run.efa: true)
+    "FI_PROVIDER": "efa", "FI_EFA_USE_DEVICE_RDMA": "1", "NCCL_PROTO": "simple",
+    "LD_LIBRARY_PATH": "/opt/amazon/ofi-nccl/lib64:/opt/amazon/efa/lib64:" + os.environ.get("LD_LIBRARY_PATH", ""),
+}
+
+
 def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke: bool = False) -> tuple[int, int]:
     r = c["run"]; gpus = r["train_gpus"]; out.mkdir(parents=True, exist_ok=True)
+    net = dict(EFA_ENV) if r.get("efa") else {}
     (out / "config.json").write_text(json.dumps(c, indent=1, ensure_ascii=False))
     names = [] if r.get("reward_service") else workers_for(make_combiner(c["reward"]).terms())   # remote service: no local workers
     workers = Workers(names, out / "queue", r.get("reward_gpus") or [0]) if names else None; peak = [0]; stop = threading.Event()
@@ -64,7 +71,7 @@ def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke
         if r.get("resume"): cmd += ["--resume", r["resume"], "--start_iter", str(r.get("start_iter", 0))]
         if smoke: cmd += ["--smoke"]
         with open(log_path, "a") as lf:
-            rc = subprocess.call(cmd, env=env_with_repo(CUDA_VISIBLE_DEVICES=",".join(map(str, gpus)), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"),
+            rc = subprocess.call(cmd, env=env_with_repo(CUDA_VISIBLE_DEVICES=",".join(map(str, gpus)), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", **net),
                                  stdout=lf, stderr=subprocess.STDOUT, cwd=REPO)
     finally:
         stop.set()
