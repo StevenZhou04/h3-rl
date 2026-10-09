@@ -24,7 +24,8 @@ def main():
                 os.makedirs(os.path.dirname(out), exist_ok=True); print("downloading", f, flush=True)
                 shutil.move(hf_hub_download("Comfy-Org/MiniMax-H3", f, local_dir=os.path.join(paths.MODELS, ".dl")), out)
         snapshot_download("MiniMaxAI/MiniMax-H3", allow_patterns=["*.json", "*.txt", "*.jinja", "*tokenizer*", "*.model"])
-    if a.hyperflow and not os.path.exists(paths.HYPERFLOW_DEFAULT):
+    from h3rl.core.hyperflow import is_current
+    if a.hyperflow and not (os.path.exists(paths.HYPERFLOW_DEFAULT) and is_current(paths.HYPERFLOW_DEFAULT)):   # (re)convert stale files
         from h3rl.core.hyperflow import convert
         src = hf_hub_download("videorebirth/hyperflow", "minimax_h3_hyperflow_8step_v1.0.safetensors", local_dir=os.path.join(paths.MODELS, ".dl"))
         convert(src, paths.HYPERFLOW_DEFAULT)

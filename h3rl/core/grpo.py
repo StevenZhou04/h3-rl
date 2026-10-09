@@ -159,6 +159,9 @@ def load_h3_for_rl(*, dit_path: str, text_encoder_path: str, video_vae_path: str
     base_networks = []
     if base_lora_paths:
         from musubi_tuner.utils.lora_utils import attach_lora_weights
+        from h3rl.core import hyperflow
+        for path in base_lora_paths:          # HyperFlow's endpoint embedder must exist before its LoRA can attach
+            if hyperflow.has_endpoint_lora(path): hyperflow.install_two_time(transformer, hyperflow.hyperflow_gate(path))
 
         base_networks = attach_lora_weights(
             lora_minimax_h3, transformer, list(base_lora_paths), [1.0] * len(base_lora_paths),

@@ -145,7 +145,8 @@ def nft_loss(transformer, network, params: list, old_params: list, sample: dict,
     layout = ctx["layout"]
     x0v, x0a = sample["video"].to(device), sample["audio"].to(device)
     sv = draw_sigma(schedule.video, cfg.sigma_jitter, rng); sa = draw_sigma(schedule.audio, cfg.sigma_jitter, rng)
-    ev, ea = torch.randn_like(x0v.float()), torch.randn_like(x0a.float())
+    gen = torch.Generator(device=device).manual_seed(rng.getrandbits(62))                 # rng is per rank: independent noise
+    ev = torch.randn(x0v.shape, generator=gen, device=device, dtype=torch.float32); ea = torch.randn(x0a.shape, generator=gen, device=device, dtype=torch.float32)
     xtv = ((1.0 - sv) * x0v.float() + sv * ev).to(torch.bfloat16); xta = ((1.0 - sa) * x0a.float() + sa * ea).to(torch.bfloat16)
     tv, ta = (x0v.float() - ev), (x0a.float() - ea)                                      # musubi's H3 target: latents - noise
     vis = tuple(t.to(device) for t in sample["vis_cond"]); aud = tuple(t.to(device) for t in sample["aud_cond"])

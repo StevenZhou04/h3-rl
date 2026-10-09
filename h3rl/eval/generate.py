@@ -2,7 +2,7 @@
 seeds, 8 steps, deterministic ODE. Writes one mp4 per (prompt, seed) plus a manifest for the scorers.
 Text encodings come from the RL text cache when present; anything else (held-out SpatialVID captions,
 short prompts) is encoded once with the NVFP4 text encoder, which is loaded and freed BEFORE the DiT."""
-from h3rl.paths import H3_ROOT, H3_CKPTS, DIT_BF16, HYPERFLOW, TEXT_ENCODER
+from h3rl.paths import H3_ROOT, H3_CKPTS, DIT_BF16, HYPERFLOW, HYPERFLOW_DEFAULT, TEXT_ENCODER
 import argparse, json, os, sys, time, subprocess
 import numpy as np, torch
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,9 +16,10 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--eval_set", nargs="+", required=True, help="jsonl files with eid/prompt/task/image")
 ap.add_argument("--out", required=True)
 ap.add_argument("--dit", default=DIT_BF16)
-ap.add_argument("--hyperflow", default=HYPERFLOW, help="'' for the stock grid")
+ap.add_argument("--hyperflow", default=HYPERFLOW or (HYPERFLOW_DEFAULT if os.path.exists(HYPERFLOW_DEFAULT) else ""), help="'' for the base model")
 ap.add_argument("--adapters", nargs="*", default=[], help="extra LoRA safetensors (e.g. the SFT LoRA), attached after HyperFlow")
-ap.add_argument("--steps", type=int, default=8)
+ap.add_argument("--steps", type=int, default=None, help="default: 8 with HyperFlow, 30 on the base model")
+ap.add_argument("--frames", type=int, default=124, help="clip length for prompts without min_frames (17n+5 at 24 fps)")
 ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
 ap.add_argument("--text_cache", default=f"{H3_ROOT}/eval_text_cache.pt")
 ap.add_argument("--text_encoder", default=TEXT_ENCODER)
@@ -27,7 +28,8 @@ ap.add_argument("--seed_mode", choices=["shared", "prompt"], default="shared", h
 ap.add_argument("--size", type=int, nargs=2, default=[544, 960], metavar=("H", "W"), help="eval canvas; RL used 320 512")
 a = ap.parse_args()
 CK = H3_CKPTS; os.makedirs(a.out, exist_ok=True); device = torch.device("cuda:0")
-cfg = GRPOConfig(infer_steps=a.steps, width=a.size[1], height=a.size[0], frame_count=124)
+if a.steps is None: a.steps = 8 if a.hyperflow else 30
+cfg = GRPOConfig(infer_steps=a.steps, width=a.size[1], height=a.size[0], frame_count=a.frames)
 rows = [json.loads(l) for f in a.eval_set for l in open(f)]
 if a.limit: rows = rows[:a.limit]
 done = {json.loads(l)["key"] for l in open(f"{a.out}/manifest.jsonl")} if os.path.exists(f"{a.out}/manifest.jsonl") else set()
@@ -57,6 +59,7 @@ models = load_h3_for_rl(dit_path=a.dit, text_encoder_path="unused", video_vae_pa
 from h3rl.core.rope_fast import install_fast_rope; install_fast_rope()
 transformer, network = models["transformer"], models["network"]; network.set_multiplier(0.0); transformer.eval()
 schedule = make_schedule(cfg, device, hyper)
+from h3rl.core.hyperflow import bind_schedule; bind_schedule(models["transformer"], schedule)
 print(f"model loaded {time.time()-t0:.0f}s; adapters={base_loras}; sigmas={[round(float(x),3) for x in schedule.video]}", flush=True)
 from musubi_tuner.minimax_h3.sampling import initialize_target_latents, augment_condition_latents
 from musubi_tuner.minimax_h3.packing import VIDEO_CHANNELS, AUDIO_CHANNELS, STEREO_CHANNELS
@@ -72,7 +75,7 @@ ctx_cache = {}
 for n, (r, seed) in enumerate(todo):
     key = f"{r['eid']}_s{seed}"
     if r["eid"] not in ctx_cache:
-        h, t = tc[r["prompt"]]; latent = geometry = cond_px = None
+        h, t = tc[r["prompt"]]; latent = geometry = cond_px = None; cfg.frame_count = int(r.get("min_frames") or a.frames)
         if r["task"] == "fl2va":
             frames = load_image_frames(r["image"], width=cfg.width, height=cfg.height)
             latent, geometry = encode_condition_latent(frames, models["video_vae"], device); cond_px = np.asarray(frames[0])

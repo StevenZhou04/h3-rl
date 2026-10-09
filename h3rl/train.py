@@ -44,6 +44,9 @@ def main():
     hyper_path = m.get("hyperflow") or ""
     if hyper_path == "default": hyper_path = paths.HYPERFLOW_DEFAULT
     if hyper_path and not os.path.exists(hyper_path): raise SystemExit(f"HyperFlow LoRA not found: {hyper_path} (scripts/download_weights.py --hyperflow)")
+    if hyper_path:
+        from h3rl.core.hyperflow import is_current
+        if not is_current(hyper_path): raise SystemExit(f"{hyper_path} is from an older, incorrect conversion; rerun scripts/download_weights.py --hyperflow")
     infer_steps = int(m.get("infer_steps") or (8 if hyper_path else 30))
     lcfg = GRPOConfig(infer_steps=infer_steps, network_dim=int(m.get("lora_rank", 32)), network_alpha=float(m.get("lora_alpha", 16.0)),
                       height=d["size"][0], width=d["size"][1], frame_count=d["frames"][0])
@@ -53,6 +56,7 @@ def main():
     from h3rl.core.rope_fast import install_fast_rope; install_fast_rope()
     transformer, network = models["transformer"], models["network"]; transformer.enable_gradient_checkpointing()
     schedule = make_schedule(lcfg, device, read_hyperflow_metadata(hyper_path) if hyper_path else None)
+    from h3rl.core.hyperflow import bind_schedule; bind_schedule(transformer, schedule)          # HyperFlow two-time endpoints
     params = [p for p in network.parameters() if p.requires_grad]
     T = TrainContext(models=models, transformer=transformer, network=network, params=params, schedule=schedule, device=device,
                      rank=rank, world=world, rng=random.Random(int(run.get("seed", 0)) * 1000 + rank), infer_steps=infer_steps)

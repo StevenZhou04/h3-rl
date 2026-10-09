@@ -18,7 +18,8 @@ class HPSPP(Worker):
         out = []
         for r in reqs:
             frames = sample_frames(r["mp4"], self.n_frames, f"{self.tmp}/{r['key']}")
-            prog = float(r.get("meta", {}).get("rl_progress", 0.0)); it = 0.0 if prog <= 0 else 0.3 + 0.7 * prog
+            meta = r.get("meta") or {}
+            it = 0.3 + 0.7 * float(meta["rl_progress"]) if meta.get("rl_progress") is not None else 0.0   # upstream: ramp 0.3 -> 1 during RL
             rw = self.m.reward(prompts=[r["prompt"]] * len(frames), image_paths=frames, iter_step=it)
             mus = [float(x[0].item()) for x in rw]
             out.append({"key": r["key"], "scores": {"hps": float(np.mean(mus)), "hps_min": float(np.min(mus))}})

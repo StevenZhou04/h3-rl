@@ -40,7 +40,7 @@ class GRPO(Algorithm):
 
     def update(self, samples, iteration):
         T, cfg = self.T, self.cfg
-        # missing reward (timeout, failed worker): advantage 0; gated or broken: fixed -1; the rest are normalised
+        # missing reward (timeout, failed worker): advantage 0; gated or broken: below the group's worst; the rest are normalised
         # within their group, and only they enter the mean and std
         rewards = np.array([np.nan if s["R"].get("total") is None else s["R"]["total"] for s in samples]); adv = np.zeros_like(rewards)
         bad = np.array([s["R"]["video"] == WORST for s in samples]); ok = ~np.isnan(rewards) & ~bad
@@ -51,7 +51,11 @@ class GRPO(Algorithm):
         if T.world > 1:                                           # one std over every rank's rollouts (global_std)
             parts = [None] * T.world; dist.all_gather_object(parts, valid); valid = [x for p in parts for x in p]
         sd = float(np.std(valid)) if len(valid) >= 2 else 0.0
-        adv = adv / max(sd, 1e-3); adv[bad] = -1.0
+        adv = adv / max(sd, 1e-3)
+        for g in sorted({s["group"] for s in samples}):            # gated / broken: strictly the group's worst
+            gi = [i for i, s in enumerate(samples) if s["group"] == g]; floor = min([-1.0] + [adv[i] for i in gi if ok[i]])
+            for i in gi:
+                if bad[i]: adv[i] = floor - 0.5
         T.transformer.train(); self.opt.zero_grad(set_to_none=True); losses, ratios = [], []
         prev = [p.detach().clone() for p in T.params]
         for i, s in enumerate(samples):
