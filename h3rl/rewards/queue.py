@@ -42,13 +42,15 @@ def collect(queue: str, keys, workers, timeout_s: float = 3600, poll_s: float = 
 
 
 def pending_requests(queue: str, worker: str, limit: int):
-    files = sorted(glob.glob(f"{queue}/in/{worker}/*.json"))[:limit]
-    reqs = []
-    for f in files:
-        try:
-            reqs.append(json.load(open(f)))
-        except json.JSONDecodeError:
-            continue
+    """Claims up to `limit` requests by renaming them (atomic), so replicas sharing a queue never score the same one."""
+    files, reqs = [], []
+    for f in sorted(glob.glob(f"{queue}/in/{worker}/*.json")):
+        if len(files) >= limit: break
+        claimed = f"{f[:-5]}.{os.getpid()}.claimed"
+        try: os.rename(f, claimed)
+        except FileNotFoundError: continue                     # another replica took it
+        try: reqs.append(json.load(open(claimed))); files.append(claimed)
+        except json.JSONDecodeError: os.remove(claimed)
     return files, reqs
 
 

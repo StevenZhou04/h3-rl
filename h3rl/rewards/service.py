@@ -59,7 +59,7 @@ def make_handler(root: Path):
     return H
 
 
-def janitor(root: Path, max_age=3600):
+def janitor(root: Path, max_age: float):
     while True:
         cut = time.time() - max_age
         for p in list((root / "videos").glob("*.mp4")) + list((root / "queue" / "out").glob("*/*.json")):
@@ -72,13 +72,14 @@ def janitor(root: Path, max_age=3600):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--reward", required=True, help="reward config (decides which workers run)")
     ap.add_argument("--gpus", type=int, nargs="+", default=list(range(8))); ap.add_argument("--replicas", type=int, default=1)
+    ap.add_argument("--keep_s", type=float, default=4 * 3600, help="delete uploads and results older than this (keep above run.reward_timeout_s)")
     ap.add_argument("--port", type=int, default=8800); ap.add_argument("--root", default=f"{paths.CACHE}/reward_service")
     ap.add_argument("--workers", nargs="*", default=None, help="override the worker list (default: from the reward config)")
     a = ap.parse_args(); root = Path(a.root); (root / "queue").mkdir(parents=True, exist_ok=True)
     names = a.workers if a.workers is not None else workers_for(make_combiner(OmegaConf.to_container(OmegaConf.load(a.reward))).terms())
     w = Workers(names, root / "queue", a.gpus, a.replicas) if names else None
     if w: w.wait_loaded()
-    threading.Thread(target=janitor, args=(root,), daemon=True).start()
+    threading.Thread(target=janitor, args=(root, a.keep_s), daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(root))
     print(f"reward service on :{a.port} | workers {names} x{a.replicas} on GPUs {a.gpus} | root {root}", flush=True)
     try: srv.serve_forever()

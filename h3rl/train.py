@@ -32,7 +32,7 @@ def eligible(pool, frames):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--config", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--iters", type=int, required=True); ap.add_argument("--save_every", type=int, default=5)
-    ap.add_argument("--start_iter", type=int, default=0); ap.add_argument("--resume", default=None, help="checkpoint prefix (without .safetensors)")
+    ap.add_argument("--start_iter", type=int, default=None, help="default: the resumed checkpoint's iteration, else 0"); ap.add_argument("--resume", default=None, help="checkpoint prefix (without .safetensors)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--smoke", action="store_true", help="after the run, check loss/grad/reward terms on rank 0 and exit 3 on every rank if they fail")
     a = ap.parse_args()
@@ -56,12 +56,28 @@ def main():
     params = [p for p in network.parameters() if p.requires_grad]
     T = TrainContext(models=models, transformer=transformer, network=network, params=params, schedule=schedule, device=device,
                      rank=rank, world=world, rng=random.Random(int(run.get("seed", 0)) * 1000 + rank), infer_steps=infer_steps)
-    algo = ALGORITHMS[ac["name"]](ac, T); comb = make_combiner(rc)
-    terms = comb.terms(); workers = workers_for(terms)
+    comb = make_combiner(rc); terms = comb.terms(); workers = workers_for(terms)
     per_video = [w for w in workers if WORKERS[w].get("kind", "video") == "video"]; per_group = [w for w in workers if WORKERS[w].get("kind") == "group"]
-    if a.resume:
-        network.load_weights(a.resume + ".safetensors"); st = json.load(open(a.resume + ".state.json"))
-        comb.load(st["combiner"]); algo.load(st["algo"]); log(f"resumed from {a.resume}")
+    st, extra = None, None
+    if a.resume:                    # weights first: algorithms snapshot the LoRA (EMA copy, trust-region reference) when built
+        st = json.load(open(a.resume + ".state.json"))
+        if os.path.exists(a.resume + ".train.pt"):                # exact: fp32 LoRA, optimizer and algorithm tensors
+            extra = torch.load(a.resume + ".train.pt", map_location="cpu", weights_only=False)
+            with torch.no_grad():
+                for p, v in zip(params, extra["params"], strict=True): p.copy_(v.to(p.device, p.dtype))
+        else:                                                     # bf16 weights only (inference checkpoint)
+            info = network.load_weights(a.resume + ".safetensors")
+            missing = [k for k in getattr(info, "missing_keys", []) if "lora" in k]
+            if missing: raise SystemExit(f"{a.resume}.safetensors does not match this LoRA ({len(missing)} missing keys, e.g. {missing[0]})")
+        comb.load(st["combiner"])
+        if a.start_iter is None: a.start_iter = int(st["iter"])
+        T.rng = random.Random(int(run.get("seed", 0)) * 1000 + rank + 7919 * a.start_iter)   # do not replay the first iterations' prompts
+    a.start_iter = a.start_iter or 0
+    algo = ALGORITHMS[ac["name"]](ac, T)
+    if st is not None:
+        algo.load(st["algo"])
+        if extra is not None: algo.load_tensors(extra["algo"])
+        log(f"resumed from {a.resume} at iteration {a.start_iter} ({'exact' if extra is not None else 'weights only'})")
     tc = f"{paths.CACHE}/text_cache"; pool = [json.loads(l) for l in open(d["pool"])]; pool = [r for r in pool if os.path.exists(f"{tc}/{r['pid']}.pt")]
     log(f"algo={ac['name']} infer_steps={infer_steps} workers={workers} pool={len(pool)} world={world}")
     timeout = float(run.get("reward_timeout_s", 5400)); rq = make_backend(run, Q); history = []
@@ -80,7 +96,8 @@ def main():
                 fr = load_image_frames(pr["image"], width=w, height=h); latent, geometry = encode_condition_latent(fr, models["video_vae"], device); cond_px = np.asarray(fr[0])
             ctx = build_context(pr["prompt"], hs, tags, lcfg, device, task=pr["task"], condition_latent=latent, condition_geometry=geometry,
                                 condition_path=pr.get("image") or "first_frame.png", condition_frame=cond_px)
-            for k, s in enumerate(algo.rollout(ctx, pr, it * 100003 + rank * 1009 + j * 101)):
+            seed = int(np.random.SeedSequence([int(run.get("seed", 0)), it, rank, j]).generate_state(1)[0])   # distinct per (iteration, rank, prompt)
+            for k, s in enumerate(algo.rollout(ctx, pr, seed)):
                 key = f"{tag}_it{it:04d}_r{rank}_p{j}_k{k}"; mp4 = f"{out}/rollouts/it{it:04d}/{key}.mp4"; os.makedirs(os.path.dirname(mp4), exist_ok=True)
                 s.update(key=key, mp4=mp4, guard=decode_and_write(models, s["video"], s["audio"], mp4, device), ctx=ctx, prompt=pr, group=j)
                 samples.append(s); json.dump({"key": key, "pid": pr.get("pid"), "prompt": pr.get("prompt"), "guard": s["guard"]}, open(mp4[:-4] + ".json", "w"))
@@ -117,7 +134,8 @@ def main():
             with open(f"{out}/metrics.jsonl", "a") as f: f.write(json.dumps(mt) + "\n")
             if (it + 1) % a.save_every == 0 or it + 1 == a.iters:
                 p = f"{out}/{ac['name']}-{it + 1:05d}"; network.save_weights(p + ".safetensors", torch.bfloat16, {"iter": str(it + 1), "algo": ac["name"]})
-                json.dump({"combiner": comb.state(), "algo": algo.state(), "iter": it + 1}, open(p + ".state.json", "w")); log(f"saved {p}")
+                json.dump({"combiner": comb.state(), "algo": algo.state(), "iter": it + 1}, open(p + ".state.json", "w"))
+                torch.save({"params": [q.detach().float().cpu() for q in params], "algo": algo.state_tensors()}, p + ".train.pt"); log(f"saved {p}")
         if world > 1: dist.barrier()
     if a.smoke:                                    # one verdict for every rank on every node (no shared disk needed)
         import math
@@ -127,8 +145,10 @@ def main():
         if world > 1:
             flag = torch.tensor([1.0 if ok else 0.0], device=device); dist.all_reduce(flag, op=dist.ReduceOp.MIN); ok = bool(flag.item())
         log(f"SMOKE {'OK' if ok else 'FAIL'} | missing terms {[k for k in need if history and k not in history[-1]]}")
-        if world > 1: dist.destroy_process_group()
-        if not ok: raise SystemExit(3)
+        if not ok:
+            if world > 1: dist.destroy_process_group()
+            raise SystemExit(3)
+    if world > 1: dist.destroy_process_group()
     log("DONE")
 
 

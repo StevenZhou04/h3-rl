@@ -6,7 +6,7 @@ A reward config names a combiner (default `weighted_z`) and its options:
     video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.3, flow_motion: 0.5}   # term: weight (negative = lower is better)
     audio: {}                                                         # audio-branch terms (used by NFT's audio loss)
     sync:  {}                                                         # added to both branches
-    gates:  {cut_free: {min: 0}}         # a rollout whose term falls outside the bound ranks last in its group
+    gates:  {cut_free: {min: 0}}         # a rollout whose term falls outside the bound ranks last in its group (missing term: no reward)
     floors: {va_vq: 0.5}                 # penalise only drops below the term's start-of-training level
     floor_warmup: 64                     # rollouts used to fix each floor's reference level
 
@@ -92,10 +92,15 @@ class WeightedZ(Combiner):
         Ra, na, _ = self._branch(self.rc.get("audio"), axes) if has_audio else (0.0, 0, 0.0)
         if ns: Rv += Rs; Ra += Rs
         gated = any(k in axes and (("min" in b and axes[k] < b["min"]) or ("max" in b and axes[k] > b["max"])) for k, b in self.gates.items())
+        gate_unknown = not gated and any(k not in axes for k in self.gates)   # gate worker failed or timed out: no verdict
         broken = not all(guard.get(k, 1.0) >= 0.5 for k in GUARDRAIL_KEYS)
         if gated or broken: Rv = WORST
-        return {"video": Rv if (nv or ns or gated or broken) else None, "audio": Ra if (has_audio and (na or ns)) else None,
-                "axes": axes, "gated": float(gated), "broken": float(broken)}
+        video = None if gate_unknown and not broken else (Rv if (nv or ns or gated or broken) else None)
+        audio = Ra if (has_audio and (na or ns)) else None
+        # one scalar for algorithms with a single objective (GRPO): the sync terms are in both branches, count them once
+        total = None if video is None and audio is None else (WORST if video == WORST else (video or 0.0) + (audio or 0.0) - (Rs if (ns and video is not None and audio is not None) else 0.0))
+        return {"video": video, "audio": audio, "total": total, "axes": axes, "gated": float(gated), "broken": float(broken),
+                "gate_unknown": float(gate_unknown)}
 
     def state(self): return {"rz": self.rz.state(), "ref": self.ref, "seen": self.seen}
     def load(self, s): self.rz.load(s["rz"]); self.ref = dict(s.get("ref", {})); self.seen = dict(s.get("seen", {}))

@@ -8,6 +8,7 @@ import numpy as np, torch
 from h3rl.algos.base import Algorithm, register
 from h3rl.core.grpo import GRPOConfig, rollout_group, grpo_loss_for_trajectory, GradNormEqualizer
 from h3rl.core.dist import average_gradients
+import torch.distributed as dist
 from h3rl.rewards.combine import WORST
 
 
@@ -41,13 +42,16 @@ class GRPO(Algorithm):
         T, cfg = self.T, self.cfg
         # missing reward (timeout, failed worker): advantage 0; gated or broken: fixed -1; the rest are normalised
         # within their group, and only they enter the mean and std
-        rewards = np.array([np.nan if s["R"]["video"] is None and s["R"]["audio"] is None else (s["R"]["video"] or 0.0) + (s["R"]["audio"] or 0.0)
-                            for s in samples]); adv = np.zeros_like(rewards)
+        rewards = np.array([np.nan if s["R"].get("total") is None else s["R"]["total"] for s in samples]); adv = np.zeros_like(rewards)
         bad = np.array([s["R"]["video"] == WORST for s in samples]); ok = ~np.isnan(rewards) & ~bad
         for g in sorted({s["group"] for s in samples}):
             idx = np.array([i for i, s in enumerate(samples) if s["group"] == g and ok[i]], dtype=int)
             if len(idx) >= 2: adv[idx] = rewards[idx] - rewards[idx].mean()
-        adv = adv / max(float(rewards[ok].std()) if ok.sum() >= 2 else 0.0, 1e-3); adv[bad] = -1.0
+        valid = [float(x) for x in rewards[ok]]
+        if T.world > 1:                                           # one std over every rank's rollouts (global_std)
+            parts = [None] * T.world; dist.all_gather_object(parts, valid); valid = [x for p in parts for x in p]
+        sd = float(np.std(valid)) if len(valid) >= 2 else 0.0
+        adv = adv / max(sd, 1e-3); adv[bad] = -1.0
         T.transformer.train(); self.opt.zero_grad(set_to_none=True); losses, ratios = [], []
         prev = [p.detach().clone() for p in T.params]
         for i, s in enumerate(samples):
@@ -57,5 +61,16 @@ class GRPO(Algorithm):
         gn = float(torch.nn.utils.clip_grad_norm_(T.params, self.max_grad_norm)); self.opt.step(); self.opt.zero_grad(set_to_none=True)
         if cfg.tr_vel_beta > 0: self.ref_vel = prev
         if self.ref_pos is not None and (iteration + 1) % cfg.ref_refresh_every == 0: self.ref_pos = [p.detach().clone() for p in T.params]
-        return dict(loss=float(np.mean(losses)), grad_norm=gn, reward_std=float(rewards[ok].std()) if ok.any() else 0.0,
+        return dict(loss=float(np.mean(losses)), grad_norm=gn, reward_std=sd,
                     ratio_dev_p95=float(np.percentile(np.abs(np.array(ratios) - 1.0), 95)) if ratios else 0.0)
+
+    def state_tensors(self):
+        cpu = lambda ps: None if ps is None else [p.detach().cpu() for p in ps]
+        return {"opt": self.opt.state_dict(), "ref_pos": cpu(self.ref_pos), "ref_vel": cpu(self.ref_vel), "eq": self.eq.n if self.eq else None}
+
+    def load_tensors(self, s):
+        dev = self.T.device
+        self.opt.load_state_dict(s["opt"])
+        if s.get("ref_pos") is not None: self.ref_pos = [p.to(dev) for p in s["ref_pos"]]
+        if s.get("ref_vel") is not None: self.ref_vel = [p.to(dev) for p in s["ref_vel"]]
+        if self.eq is not None and s.get("eq") is not None: self.eq.n = list(s["eq"])

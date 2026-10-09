@@ -69,7 +69,7 @@ def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke
         nodes = ["--nnodes", str(r.get("nnodes", 1)), "--node_rank", str(r.get("node_rank", 0)), "--master_addr", r["master_addr"]] if int(r.get("nnodes", 1)) > 1 else []
         cmd = [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node", str(len(gpus)), *nodes, "--master_port", str(r["port"]), "-m", "h3rl.train",
                "--config", str(out / "config.json"), "--out", str(out), "--iters", str(iters), "--save_every", str(save_every)]
-        if r.get("resume"): cmd += ["--resume", r["resume"], "--start_iter", str(r.get("start_iter", 0))]
+        if r.get("resume"): cmd += ["--resume", r["resume"]] + (["--start_iter", str(r["start_iter"])] if r.get("start_iter") is not None else [])
         if smoke: cmd += ["--smoke"]
         with open(log_path, "a") as lf:
             rc = subprocess.call(cmd, env=env_with_repo(CUDA_VISIBLE_DEVICES=",".join(map(str, gpus)), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", **net),

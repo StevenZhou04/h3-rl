@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import json
 from pathlib import Path
 from typing import Callable
 

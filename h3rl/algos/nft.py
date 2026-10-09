@@ -1,11 +1,13 @@
 """DiffusionNFT (Zheng et al., 2025): forward-process, likelihood-free RL on the plain ODE sampler.
 Rollouts: deterministic ODE samples with independent initial noise. Update: the reward-weighted flow-matching loss
     v+ = (1-b) v_old + b v_theta,  v- = (1+b) v_old - b v_theta,  L = r ||v+ - v||^2 + (1-r) ||v- - v||^2
-with r in [0,1] the group-normalised reward (per modality: video and audio branches), v_old an EMA copy of the LoRA."""
+with r in [0,1] the group-normalised reward (per modality: video and audio branches), v_old an EMA copy of the LoRA.
+As in the reference implementation, rollouts are sampled with v_old and the EMA is updated once per iteration, after
+the gradient steps: old <- eta old + (1 - eta) theta, eta = min(ema_slope * optimizer steps so far, ema_max)."""
 from __future__ import annotations
 import numpy as np, torch
 from h3rl.algos.base import Algorithm, register
-from h3rl.core.nft import NFTConfig, sample_group, group_r, nft_loss, ema_update
+from h3rl.core.nft import NFTConfig, sample_group, group_r, nft_loss, ema_update, swapped_params
 from h3rl.core.dist import average_gradients
 
 
@@ -28,14 +30,15 @@ class NFT(Algorithm):
 
     def rollout(self, ctx, prompt, seed):
         self._canvas()
-        return sample_group(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
-                            [seed + k for k in range(self.cfg.group_size)])
+        with swapped_params(self.T.params, self.old):                 # data collection uses the old policy
+            return sample_group(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
+                                [seed + k for k in range(self.cfg.group_size)])
 
     def _step(self):
         T = self.T
         if T.world > 1: average_gradients(T.params, T.world)
         gn = float(torch.nn.utils.clip_grad_norm_(T.params, self.cfg.max_grad_norm)); self.opt.step(); self.opt.zero_grad(set_to_none=True)
-        self.n_updates += 1; ema_update(self.old, T.params, min(self.cfg.ema_slope * self.n_updates, self.cfg.ema_max)); return gn
+        self.n_updates += 1; return gn
 
     def update(self, samples, iteration):
         T, cfg = self.T, self.cfg; self._canvas()
@@ -53,9 +56,16 @@ class NFT(Algorithm):
                                       T.schedule, T.device, T.rng, loss_scale=1.0 / cfg.grad_accum)); n += 1
                 if n % cfg.grad_accum == 0: gn = self._step()
         if n % cfg.grad_accum: gn = self._step()
+        ema_update(self.old, T.params, min(cfg.ema_slope * self.n_updates, cfg.ema_max))
         rv = [s["r_video"] for s in samples if s["r_video"] is not None]
         return dict(loss=float(np.mean([p["loss"] for p in parts])), fm_video=float(np.mean([p["fm_video"] for p in parts])),
                     r_video_mean=float(np.mean(rv)) if rv else 0.0, grad_norm=gn, n_updates=float(self.n_updates))
 
     def state(self): return {"n_updates": self.n_updates}
     def load(self, s): self.n_updates = int(s.get("n_updates", 0))
+    def state_tensors(self): return {"old": [o.detach().cpu() for o in self.old], "opt": self.opt.state_dict()}
+
+    def load_tensors(self, s):
+        with torch.no_grad():
+            for o, v in zip(self.old, s["old"], strict=True): o.copy_(v.to(o.device, o.dtype))
+        self.opt.load_state_dict(s["opt"])

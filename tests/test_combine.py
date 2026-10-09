@@ -32,3 +32,16 @@ cb = make_combiner({"video": {"a": 1.0}})
 out = cb.score_batch([({"a": x}, {}, False) for x in [1.0, 2.0, 1.0, 1.0]])
 assert out[0]["video"] == out[2]["video"] == out[3]["video"] < out[1]["video"], [o["video"] for o in out]
 print("score_batch ok", [round(o["video"], 3) for o in out])
+
+# total: one scalar for GRPO with the sync terms counted once; a gate without a verdict gives no reward
+cb = make_combiner({"video": {"a": 1.0}, "audio": {"b": 1.0}, "sync": {"s": 1.0}})
+R = cb.score_batch([({"a": x, "b": y, "s": z}, {}, True) for x, y, z in [(0, 0, 0), (1, 2, 3), (2, 1, 0)]])[1]
+cb2 = make_combiner({"video": {"a": 1.0}, "audio": {"b": 1.0}})
+R2 = cb2.score_batch([({"a": x, "b": y}, {}, True) for x, y in [(0, 0), (1, 2), (2, 1)]])[1]
+assert abs(R2["total"] - (R2["video"] + R2["audio"])) < 1e-12                       # no sync terms: total = video + audio
+Rs = R["video"] - R2["video"]; assert abs(R["total"] - (R2["video"] + R2["audio"] + Rs)) < 1e-9, (R, R2)   # sync counted once
+g = make_combiner({"video": {"a": 1.0}, "gates": {"cut_free": {"min": 0}}})
+out = g.score_batch([({"a": 1.0}, {}, False), ({"a": 2.0, "cut_free": -1}, {}, False), ({"a": 3.0, "cut_free": 1}, {}, False)])
+assert out[0]["video"] is None and out[0]["total"] is None and out[0]["gate_unknown"] == 1.0
+assert out[1]["video"] == WORST and out[1]["total"] == WORST and out[2]["video"] is not None
+print("total / gate_unknown ok")

@@ -52,5 +52,7 @@ class Algorithm:
         """One policy update from the iteration's scored samples; returns float metrics."""
         raise NotImplementedError
 
-    def state(self) -> dict: return {}
+    def state(self) -> dict: return {}          # small JSON-able state (counters), saved next to every checkpoint
     def load(self, s: dict): pass
+    def state_tensors(self) -> dict: return {}  # tensors and optimizer state for an exact resume (torch.save)
+    def load_tensors(self, s: dict): pass
