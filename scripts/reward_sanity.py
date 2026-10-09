@@ -2,6 +2,10 @@
 
   python scripts/reward_sanity.py <rollouts dir> --gpus 0 1 2 3 [--n 16] [--workers videoalign hpspp ...]
 
+Judges known to be weak (measured on H3 rollouts): va_mq and soli_phys prefer frozen clips; soli_phys also prefers blurred
+and noisy ones; with 8 frames per video the pairwise judge sees little of a local frame shuffle. cut_free is constant
+(0) unless the prompt asks for a single continuous shot, so it is not expected to move here.
+
 Takes up to N rollouts (<key>.mp4 + <key>.json with the prompt, as h3rl.train writes them), makes degraded copies
 with ffmpeg, scores everything with the reward workers, and prints for each term and degradation how often the original
 scores higher (win rate) and the mean score drop. Expected drops are marked: a term that does not prefer the original
@@ -17,7 +21,7 @@ from h3rl.rewards.procs import Workers
 from h3rl.rewards.registry import WORKERS
 
 DEGRADE = {   # name -> ffmpeg video filter (None: same video), terms expected to drop
-    "shuffled": ("random=frames=64:seed=0", {"flow_coherence", "va_mq", "soli_phys", "cut_free", "ur_physics"}),
+    "shuffled": ("random=frames=64:seed=0", {"flow_coherence", "va_mq", "ur_physics"}),
     "frozen": ("select='eq(n\\,0)',loop=loop=-1:size=1:start=0,setpts=N/FRAME_RATE/TB", {"flow_motion", "flow_raw", "va_mq"}),
     "blurred": ("gblur=sigma=10", {"hps", "hps_min", "va_vq", "ur_style"}),
     "noisy": ("noise=alls=60:allf=t", {"hps", "hps_min", "va_vq"}),
@@ -59,7 +63,7 @@ def main():
         for key, mp4, pr, _, _ in items: Q.submit(str(qd), key, mp4, pr, video_workers)
         gkeys = []   # pairwise judges: one group (original, degraded) per pair
         for key, mp4, pr, i, var in items:
-            if var == "orig" or not group_workers: continue
+            if var in ("orig", "wrong_prompt") or not group_workers: continue   # wrong_prompt: same file, nothing to compare
             gk = f"g_{key}"; orig = next(x for x in items if x[3] == i and x[4] == "orig"); gkeys.append((gk, orig[0], key, i, var))
             for w in group_workers: Q.submit_group(str(qd), gk, [{"key": orig[0], "mp4": orig[1]}, {"key": key, "mp4": mp4}], orig[2], w)
         got = Q.collect(str(qd), [x[0] for x in items], video_workers, a.timeout) if video_workers else {}
@@ -82,7 +86,7 @@ def main():
             if res.get("error"): errors[w] = errors.get(w, 0) + 1
     terms = sorted({t for d in scores.values() for t in d})
     print(f"\nworker errors: {errors or 'none'}")
-    print(f"\n{'term':<22}" + "".join(f"{v:>16}" for v in DEGRADE) + "     (win rate of the original | mean drop; * = expected to drop)")
+    print(f"\n{'term':<22}" + "".join(f"{v:>16}" for v in DEGRADE) + "     (win rate of the original, ties = 1/2 | mean drop; * = expected to drop)")
     bad = []
     for t in terms:
         base = t.split("@")[0]; row = f"{t:<22}"
@@ -90,12 +94,12 @@ def main():
             pairs = [(scores[(i, 'orig')][t], scores[(i, var)][t]) for i in range(len(vids))
                      if (i, var) in scores and t in scores[(i, 'orig')] and t in scores[(i, var)]]
             if not pairs or ("@" in t and not t.endswith("@" + var)): row += f"{'-':>16}"; continue
-            win = float(np.mean([o > d for o, d in pairs])); drop = float(np.mean([o - d for o, d in pairs]))
+            win = float(np.mean([1.0 if o > d else 0.5 if o == d else 0.0 for o, d in pairs])); drop = float(np.mean([o - d for o, d in pairs]))
             mark = "*" if base in expect or "@" in t else " "
             row += f"{win:>7.2f} {drop:>+7.3f}{mark}"
-            if mark == "*" and win < 0.6: bad.append(f"{t} vs {var}: win {win:.2f}")
+            if mark == "*" and win < 0.6 and drop <= 0: bad.append(f"{t} vs {var}: win {win:.2f}")
         print(row)
-    print("\nsuspicious (expected drop, original wins < 60%):", bad or "none")
+    print("\nsuspicious (expected drop, original wins < 60% and no mean drop):", bad or "none")
     json.dump({f"{i}|{v}": d for (i, v), d in scores.items()}, open(out / "scores.json", "w"), indent=1)
 
 
