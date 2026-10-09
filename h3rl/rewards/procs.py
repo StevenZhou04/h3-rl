@@ -27,7 +27,8 @@ class Workers:
                 gpu = "" if w in CPU_WORKERS else str(gpus[gi % len(gpus)]); gi += w not in CPU_WORKERS
                 tag = w if r == 0 else f"{w}.{r}"; log = open(self.queue / "logs" / f"{tag}.log", "w")
                 self.procs.append(subprocess.Popen([reward_python(WORKERS[w]["env"]), "-m", f"h3rl.rewards.workers.{w}", "--queue", str(self.queue)],
-                                                   env=env_with_repo(CUDA_VISIBLE_DEVICES=gpu), stdout=log, stderr=subprocess.STDOUT, cwd=REPO))
+                                                   env=env_with_repo(CUDA_VISIBLE_DEVICES=gpu), stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
+                                                   start_new_session=True))   # own process group: stop() also ends pool children
                 self.names.append(tag)
 
     def wait_loaded(self, timeout=900):
@@ -39,6 +40,14 @@ class Workers:
             time.sleep(10)
         raise TimeoutError("reward workers did not load in time")
 
-    def stop(self):
+    def stop(self, grace: float = 10.0):
+        """Terminate every worker together with its children (CPU workers run process pools), then kill stragglers."""
+        import signal
         for p in self.procs:
-            if p.poll() is None: p.terminate()
+            try: os.killpg(p.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+        t0 = time.time()
+        while time.time() - t0 < grace and any(p.poll() is None for p in self.procs): time.sleep(0.5)
+        for p in self.procs:
+            try: os.killpg(p.pid, signal.SIGKILL)                 # the group may outlive its leader
+            except ProcessLookupError: pass
