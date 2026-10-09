@@ -26,7 +26,7 @@ class GRPO(Algorithm):
         self.opt = torch.optim.AdamW(T.params, lr=self.cfg.lr, betas=(0.9, 0.99), weight_decay=0.0)
         self.eq = GradNormEqualizer(self.cfg.infer_steps - 1) if self.cfg.grad_equalizer else None
         self.ref_pos = [p.detach().clone() for p in T.params] if self.cfg.tr_pos_beta > 0 else None
-        self.ref_vel = None; self.iteration = None
+        self.ref_vel = None
 
     def _canvas(self):
         c = self.T.canvas; self.cfg.frame_count, self.cfg.height, self.cfg.width = c["frames"], c["height"], c["width"]

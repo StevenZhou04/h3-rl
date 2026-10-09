@@ -14,7 +14,7 @@ from h3rl.algos import ALGORITHMS
 from h3rl.algos.base import TrainContext
 from h3rl.core.grpo import GRPOConfig, load_h3_for_rl, read_hyperflow_metadata, make_schedule, build_context, encode_condition_latent
 from h3rl.core.nft import decode_and_write
-from h3rl.core.dist import dist_setup, average_metrics
+from h3rl.core.dist import dist_setup, average_metrics, prune_checkpoints
 from h3rl.rewards.combine import make_combiner, WORST
 from h3rl.rewards.backend import make_backend
 from h3rl.rewards.registry import WORKERS, workers_for
@@ -140,6 +140,7 @@ def main():
                 p = f"{out}/{ac['name']}-{it + 1:05d}"; network.save_weights(p + ".safetensors", torch.bfloat16, {"iter": str(it + 1), "algo": ac["name"]})
                 json.dump({"combiner": comb.state(), "algo": algo.state(), "iter": it + 1}, open(p + ".state.json", "w"))
                 torch.save({"params": [q.detach().float().cpu() for q in params], "algo": algo.state_tensors()}, p + ".train.pt"); log(f"saved {p}")
+                prune_checkpoints(out, ac["name"], int(run.get("keep_recent", 3)), int(run.get("keep_every", 50)))
         if world > 1: dist.barrier()
     if a.smoke:                                    # one verdict for every rank on every node (no shared disk needed)
         import math

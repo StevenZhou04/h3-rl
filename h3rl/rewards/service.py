@@ -8,7 +8,7 @@ serves:  POST /upload?key=K (raw mp4)   POST /submit {key, prompt, workers, meta
 Trainers point at it with run.reward_service: http://<host>:8800. Uploaded videos are deleted after an hour.
 """
 from __future__ import annotations
-import argparse, json, os, threading, time
+import argparse, json, os, re, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -18,6 +18,12 @@ from h3rl.rewards import queue as fq
 from h3rl.rewards.combine import make_combiner
 from h3rl.rewards.procs import Workers
 from h3rl.rewards.registry import workers_for
+
+
+def _name(s) -> str:
+    """Keys and worker names become file names under the service root: allow only plain names, no paths."""
+    if not (isinstance(s, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}", s)): raise ValueError(f"bad name {s!r}")
+    return s
 
 
 def make_handler(root: Path):
@@ -37,18 +43,18 @@ def make_handler(root: Path):
             u = urlparse(self.path); body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             try:
                 if u.path == "/upload":
-                    key = parse_qs(u.query)["key"][0]; assert "/" not in key and ".." not in key
+                    key = _name(parse_qs(u.query)["key"][0])
                     tmp = vids / f"{key}.mp4.part"; tmp.write_bytes(body); os.replace(tmp, vids / f"{key}.mp4"); return self._json({"ok": True})
                 d = json.loads(body or b"null")
                 if u.path == "/submit":
-                    fq.submit(q, d["key"], str(vids / f"{d['key']}.mp4"), d["prompt"], d["workers"], d.get("meta")); return self._json({"ok": True})
+                    k = _name(d["key"]); fq.submit(q, k, str(vids / f"{k}.mp4"), d["prompt"], [_name(w) for w in d["workers"]], d.get("meta")); return self._json({"ok": True})
                 if u.path == "/submit_group":
-                    fq.submit_group(q, d["key"], [{"key": k, "mp4": str(vids / f"{k}.mp4")} for k in d["members"]], d["prompt"], d["worker"], d.get("meta"))
+                    fq.submit_group(q, _name(d["key"]), [{"key": k, "mp4": str(vids / f"{k}.mp4")} for k in map(_name, d["members"])], d["prompt"], _name(d["worker"]), d.get("meta"))
                     return self._json({"ok": True})
                 if u.path == "/results":
                     found = []
                     for k, w in d:
-                        p = Path(q) / "out" / w / f"{k}.json"
+                        p = Path(q) / "out" / _name(w) / f"{_name(k)}.json"
                         if p.exists():
                             try: found.append([k, w, json.loads(p.read_text())])
                             except json.JSONDecodeError: pass
@@ -62,10 +68,12 @@ def make_handler(root: Path):
 def janitor(root: Path, max_age: float):
     while True:
         cut = time.time() - max_age
-        for p in list((root / "videos").glob("*.mp4")) + list((root / "queue" / "out").glob("*/*.json")):
+        try: old = list((root / "videos").glob("*.mp4")) + list((root / "queue" / "out").glob("*/*.json"))
+        except OSError: old = []
+        for p in old:
             try:
                 if p.stat().st_mtime < cut: p.unlink()
-            except FileNotFoundError: pass
+            except OSError: pass   # gone already, stale NFS handle, ...: never let the cleanup thread die
         time.sleep(300)
 
 

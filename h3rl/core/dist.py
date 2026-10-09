@@ -70,25 +70,15 @@ def average_metrics(metrics: dict, world_size: int, device: torch.device) -> dic
     return out
 
 
-def prune_checkpoints(out_dir: Path, keep_recent: int, keep_every: int) -> None:
-    """Keep the newest `keep_recent` checkpoints plus every `keep_every`-th as a coarse history,
-    and delete the rest, so an unattended run saving every few steps cannot fill a shared disk."""
-    # Match ONLY the numbered checkpoints. The emergency saves -- h3-grpo-000030-budget,
-    # -fatal, -degenerate -- also start with digits, so the old "[0-9]*" glob swept them in and
-    # int(stem.rsplit("-",1)[1]) raised ValueError on "budget". The try below only wraps
-    # unlink(), so that crashed the trainer at save time; a run that hit its spend ceiling and
-    # was then resumed would die on its first checkpoint.
-    ckpts = sorted(p for p in out_dir.glob("h3-grpo-*.safetensors")
-                   if re.fullmatch(r"h3-grpo-\d+", p.stem))
-    if len(ckpts) <= keep_recent:
-        return
-    for path in ckpts[:-keep_recent]:
-        step = int(path.stem.rsplit("-", 1)[1])
-        if keep_every and step % keep_every == 0:
-            continue
-        try:
-            path.unlink()
-        except OSError:
-            pass
-
-
+def prune_checkpoints(out_dir: Path, name: str, keep_recent: int, keep_every: int) -> None:
+    """Keep the newest `keep_recent` checkpoints plus every `keep_every`-th as a coarse history and delete the rest
+    (all of <name>-NNNNN.safetensors / .state.json / .train.pt), so a long run cannot fill a shared disk.
+    keep_recent <= 0 keeps everything."""
+    if keep_recent <= 0: return
+    steps = sorted(int(m.group(1)) for p in Path(out_dir).glob(f"{name}-*.safetensors")
+                   if (m := re.fullmatch(rf"{re.escape(name)}-(\d+)", p.stem)))
+    for step in steps[:-keep_recent]:
+        if keep_every and step % keep_every == 0: continue
+        for ext in (".safetensors", ".state.json", ".train.pt"):
+            try: (Path(out_dir) / f"{name}-{step:05d}{ext}").unlink()
+            except FileNotFoundError: pass

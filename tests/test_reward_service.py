@@ -34,6 +34,17 @@ check("per-video results come back through HTTP", all(got[f"k{i}"]["dummy"]["sco
 check("uploaded bytes are intact (size scored by the worker)", got["k2"]["dummy"]["scores"]["size"] == 1002)
 check("group result carries per-member scores", gg["g0"]["dummy_group"].get("members", {}).get("k2") == {"g": 2.0})
 check("each video uploaded once", len(rq.sent) == 3)
+import urllib.request
+def post(path, obj):
+    req = urllib.request.Request(url + path, json.dumps(obj).encode(), {"Content-Type": "application/json"})
+    try: return json.loads(urllib.request.urlopen(req).read())
+    except urllib.error.HTTPError as e: return json.loads(e.read())
+bad = [post("/submit", {"key": "../../escape", "prompt": "p", "workers": ["dummy"]}),
+       post("/submit", {"key": "ok", "prompt": "p", "workers": ["../x"]}),
+       post("/submit_group", {"key": "g", "members": ["../m"], "prompt": "p", "worker": "dummy_group"}),
+       post("/results", [["../../etc/passwd", "dummy"]])]
+check("path-like keys and worker names are rejected", all("error" in r for r in bad), json.dumps(bad))
+check("nothing was written outside the queue", not (root / "escape.json").exists() and not list(root.parent.glob("escape*")))
 stop.set(); srv.shutdown()
 if FAILS: print("FAILED:", FAILS); sys.exit(1)
 print("ALL PASS")

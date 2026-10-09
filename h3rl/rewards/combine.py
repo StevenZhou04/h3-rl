@@ -96,7 +96,7 @@ class WeightedZ(Combiner):
         broken = not all(guard.get(k, 1.0) >= 0.5 for k in GUARDRAIL_KEYS)
         if gated or broken: Rv = WORST
         video = None if gate_unknown and not broken else (Rv if (nv or ns or gated or broken) else None)
-        audio = Ra if (has_audio and (na or ns)) else None
+        audio = (WORST if (gated or broken) else Ra) if (has_audio and (na or ns)) else None   # a gated/broken rollout is the worst on both branches
         # one scalar for algorithms with a single objective (GRPO): the sync terms are in both branches, count them once
         total = None if video is None and audio is None else (WORST if video == WORST else (video or 0.0) + (audio or 0.0) - (Rs if (ns and video is not None and audio is not None) else 0.0))
         return {"video": video, "audio": audio, "total": total, "axes": axes, "gated": float(gated), "broken": float(broken),

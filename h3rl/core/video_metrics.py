@@ -81,13 +81,3 @@ def compute_video_metrics(frames: np.ndarray) -> dict[str, float]:
 # synthetic flat-color test clip tripped it at std=2.4 during bring-up). Black frames and
 # strobing have no legitimate reading, so those two gate; contrast is logged for diagnosis.
 GUARDRAIL_KEYS = ("black_frame_free", "flicker_free")
-
-
-def guardrail_multiplier(metrics: dict[str, float], floor: float = 0.05) -> float:
-    """Product of the guardrails, floored so a fully broken rollout still carries a tiny
-    gradient rather than an exact zero (an all-zero group has zero variance and therefore
-    contributes nothing at all to a GRPO step -- a wasted rollout instead of a taught one)."""
-    m = 1.0
-    for key in GUARDRAIL_KEYS:
-        m *= max(0.0, min(1.0, metrics.get(key, 1.0)))
-    return max(floor, m)

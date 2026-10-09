@@ -43,7 +43,7 @@ def encode_missing(c: dict, out: Path, gpus):
     f = out / "to_encode.jsonl"; f.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in miss))
     procs = [subprocess.Popen([sys.executable, "-m", "h3rl.data.encode", "--pool", str(f), "--out", str(tc), "--shard", f"{i}/{len(gpus)}"],
                               env=env_with_repo(CUDA_VISIBLE_DEVICES=str(g)), cwd=REPO) for i, g in enumerate(gpus)]
-    if any(p.wait() for p in procs): raise RuntimeError("prompt encoding failed")
+    if any([p.wait() for p in procs]): raise RuntimeError("prompt encoding failed")   # list: wait for every shard, not just up to the first failure
 
 
 EFA_ENV = {   # NCCL over AWS EFA through the aws-ofi-nccl plugin shipped on AWS GPU images (run.efa: true)

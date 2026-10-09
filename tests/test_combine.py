@@ -44,4 +44,8 @@ g = make_combiner({"video": {"a": 1.0}, "gates": {"cut_free": {"min": 0}}})
 out = g.score_batch([({"a": 1.0}, {}, False), ({"a": 2.0, "cut_free": -1}, {}, False), ({"a": 3.0, "cut_free": 1}, {}, False)])
 assert out[0]["video"] is None and out[0]["total"] is None and out[0]["gate_unknown"] == 1.0
 assert out[1]["video"] == WORST and out[1]["total"] == WORST and out[2]["video"] is not None
+ga = make_combiner({"video": {"a": 1.0}, "audio": {"b": 1.0}, "gates": {"cut_free": {"min": 0}}})
+out = ga.score_batch([({"a": 1.0, "b": 1.0, "cut_free": 1}, {}, True), ({"a": 2.0, "b": 9.0, "cut_free": -1}, {}, True),
+                      ({"a": 3.0, "b": 9.0, "cut_free": 1}, {"black_frame_free": 0.0}, True)])
+assert out[1]["audio"] == WORST and out[2]["audio"] == WORST and out[0]["audio"] != WORST, out   # gated / broken: worst on the audio branch too
 print("total / gate_unknown ok")

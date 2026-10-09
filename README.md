@@ -78,6 +78,7 @@ run:
   out: runs/nft_mix
   iters: 30
   save_every: 5
+  keep_recent: 3                       # older checkpoints are deleted, except every keep_every-th (default 50); 0 keeps all
   train_gpus: [0, 1, 2]                # one rank per GPU
   reward_gpus: [3]                     # reward workers are spread over these
   port: 29761
