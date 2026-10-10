@@ -1,10 +1,11 @@
 """Optical-flow motion reward: real pixel movement (Farneback flow), not raw frame difference, so shimmer/grain
 does not count. Added for nft_flow_mix to counter the drift toward near-static video seen in the NFT runs.
 
-  flow_motion = log1p(min(flow, CAP) * coherence**3 / FLOOR)
+  flow_motion = log1p(min(flow, CAP) * min(coherence, COH_MAX)**3 / FLOOR)
   flow      = mean flow magnitude over frame pairs (t, t+2), px at 480 px width
   coherence = median over 8-frame windows of |F(t,t+8)| / sum of the four |F(t+k,t+k+2)|  (~0.94 for real motion,
               0.14 for added camera shake, 0.52 for temporal noise, 0.70 for stuttered frames)
+CAP and COH_MAX can be set per run in the reward config: worker_env: {FLOW_CAP: 3.0, FLOW_COH_MAX: 1.0}.
 Capped so motion beyond CAP earns nothing; the coherence factor stops shake/stutter/noise from counting as motion
 (audit: with the uncorrected term the combined reward preferred shaken clips 20/24 and stuttered clips 18/24 over the clean ones).
 Prompts that ask for a fully static shot (static scene AND static camera) get a constant score, which carries no
@@ -16,7 +17,14 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from h3rl.rewards.worker_base import Worker
 
-CAP = 1.5      # px/frame @480w; base HyperFlow held-out mean is 0.655, held-out SpatialVID ~1.0
+# px/frame @480w. Was 1.5 (base HyperFlow held-out mean 0.655 on the old prompts), but the camera-move prompts of
+# example_pool.jsonl average ~1.7 for the base model and half of the NFT rollouts sat above 1.5, so within a group the
+# term ignored motion and only ranked coherence (and slightly penalised motion: within-group r = -0.18). At 3.0, 16% of
+# rollouts saturate and the within-group correlation with motion turns positive.
+CAP = float(os.environ.get("FLOW_CAP", "3.0"))
+# coherence above 1 is a Farneback artefact (the 8-frame flow cannot exceed the sum of its 2-frame parts for real motion;
+# 7% of NFT rollouts), and coherence**3 turned it into up to a 2.7x bonus
+COH_MAX = float(os.environ.get("FLOW_COH_MAX", "1.0"))
 FLOOR = 0.1
 STATIC_SCORE = float(np.log1p(CAP / FLOOR))   # constant for fully static prompts (any constant works within a group)
 
@@ -34,6 +42,10 @@ def wants_static(prompt: str) -> bool:
     m = CAMERA_STATIC.search(prompt)
     if not m: return False
     return not CAMERA_MOVES.search(prompt[m.end():])
+
+
+def flow_score(flow: float, coherence: float) -> float:
+    return float(np.log1p(min(flow, CAP) * min(coherence, COH_MAX) ** 3 / FLOOR))
 
 
 def clip_flow(path: str) -> tuple[float, float]:
@@ -59,6 +71,7 @@ class FlowMotionWorker(Worker):
 
     def load(self):
         self.pool = ProcessPoolExecutor(int(os.environ.get("FLOW_PROCS", "16")))
+        print(f"flow_motion: CAP {CAP} COH_MAX {COH_MAX} FLOOR {FLOOR}", flush=True)
 
     def score(self, requests):
         futs = [self.pool.submit(clip_flow, r["mp4"]) for r in requests]
@@ -67,7 +80,7 @@ class FlowMotionWorker(Worker):
             try: fl, coh = fu.result()
             except Exception as e: out.append({"key": r["key"], "scores": {}, "error": f"{type(e).__name__}: {e}"}); continue
             static = wants_static(r.get("prompt") or "")
-            s = STATIC_SCORE if static else float(np.log1p(min(fl, CAP) * coh ** 3 / FLOOR))
+            s = STATIC_SCORE if static else flow_score(fl, coh)
             out.append({"key": r["key"], "scores": {"flow_motion": s, "flow_raw": fl, "flow_coherence": coh, "flow_static_prompt": float(static)}})
         return out
 

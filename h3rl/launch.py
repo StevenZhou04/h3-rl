@@ -69,7 +69,7 @@ def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke
     net = dict(EFA_ENV) if r.get("efa") else {}
     (out / "config.json").write_text(json.dumps(c, indent=1, ensure_ascii=False))
     names = [] if r.get("reward_service") else workers_for(make_combiner(c["reward"]).terms())   # remote service: no local workers
-    workers = Workers(names, out / "queue", r.get("reward_gpus") or [0]) if names else None; peak = [0]; stop = threading.Event()
+    workers = Workers(names, out / "queue", r.get("reward_gpus") or [0], env=c["reward"].get("worker_env")) if names else None; peak = [0]; stop = threading.Event()
     proc = [None]; died = []
     def watch():
         while not stop.is_set():
