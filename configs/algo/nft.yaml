@@ -4,6 +4,8 @@ lr: 1.0e-4
 beta: 0.1               # NFT guidance strength
 epochs_per_batch: 2     # off-policy reuse of each rollout batch
 group_size: 8           # rollouts per prompt
+ranks_per_group: 1      # GPUs sharing each group (each makes group_size / R rollouts): R > 1 shortens an iteration about R x
+                        # when you have R x the GPUs; must divide group_size, grad_accum and the number of training GPUs
 prompts_per_step: 1     # prompts per GPU per iteration
 adv_clip_max: 5.0       # r = 0.5 + clip(A, +-5) / 10, A = (R - group mean) / global std (reference defaults)
 global_std: true

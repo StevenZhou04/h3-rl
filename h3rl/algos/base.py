@@ -2,8 +2,8 @@
 
 The trainer owns the model, prompts, clip-length buckets, decoding, rewards, metrics and checkpoints. Per iteration
 and per prompt it calls `rollout(ctx, prompt, seed)`, decodes each returned sample's final latents, scores them, and
-then calls `update(samples)` once with every sample of the iteration (each carrying `R`, the combined reward, and
-`group`, its prompt index). To add an algorithm: subclass Algorithm, register it, add configs/algo/<name>.yaml.
+then calls `update(samples)` once with every sample of the iteration (each carrying `R`, the combined reward, `group`,
+its prompt index on this rank, `gid`, the group's id across ranks, and `member`, its index in the group). To add an algorithm: subclass Algorithm, register it, add configs/algo/<name>.yaml.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -42,10 +42,17 @@ class Algorithm:
 
     def group_size(self) -> int: return int(self.a.get("group_size", 8))
     def prompts_per_step(self) -> int: return int(self.a.get("prompts_per_step", 1))
+    def ranks_per_group(self) -> int:
+        """GPUs that share each prompt group (algo.ranks_per_group, default 1): each makes group_size / R of its rollouts, so
+        more GPUs shorten an iteration instead of only enlarging the batch. Algorithms that support R > 1 override
+        supports_group_split()."""
+        return int(self.a.get("ranks_per_group", 1))
+    def supports_group_split(self) -> bool: return False
 
-    def rollout(self, ctx: dict, prompt: dict, seed: int):   # -> iterable of sample dicts (a list, or a generator for streaming)
-        """Sample one group for one prompt. Each returned dict needs `video` and `audio` (final latents); anything else
-        the algorithm wants back in update() can be added."""
+    def rollout(self, ctx: dict, prompt: dict, seed: int, members=None):   # -> iterable of sample dicts (list or generator)
+        """Sample one group (or, with ranks_per_group > 1, this rank's `members`: indices into the group, each with its own
+        seed) for one prompt. Each returned dict needs `video` and `audio` (final latents); anything else the algorithm
+        wants back in update() can be added."""
         raise NotImplementedError
 
     def update(self, samples: list[dict], iteration: int) -> dict:
