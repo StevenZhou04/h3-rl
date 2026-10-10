@@ -88,7 +88,9 @@ def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke
     old = {sg: signal.signal(sg, exit_on_signal) for sg in (signal.SIGTERM, signal.SIGHUP)}   # workers live in their own sessions
     try:
         if workers: workers.wait_loaded()
-        nodes = ["--nnodes", str(r.get("nnodes", 1)), "--node_rank", str(r.get("node_rank", 0)), "--master_addr", r["master_addr"]] if int(r.get("nnodes", 1)) > 1 else []
+        nodes = ["--nnodes", str(r.get("nnodes", 1)), "--node_rank", str(r.get("node_rank", 0)), "--master_addr", r["master_addr"],
+                 # nodes reach this point at different times (text encoding, reward-model loads): the 600 s default is too short
+                 "--rdzv_conf", f"timeout={int(r.get('rendezvous_timeout_s', 3600))}"] if int(r.get("nnodes", 1)) > 1 else []
         cmd = [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node", str(len(gpus)), *nodes, "--master_port", str(r["port"]), "-m", "h3rl.train",
                "--config", str(out / "config.json"), "--out", str(out), "--iters", str(iters), "--save_every", str(save_every)]
         if r.get("resume"): cmd += ["--resume", r["resume"]] + (["--start_iter", str(r["start_iter"])] if r.get("start_iter") is not None else [])
@@ -117,7 +119,6 @@ def smoke_check(out: Path, c: dict, peak: int) -> tuple[bool, str]:
     tot = int(subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits", "-i", str(c["run"]["train_gpus"][0])],
                              capture_output=True, text=True).stdout.strip() or 0)
     ok = len(rows) == 2 and all(math.isfinite(r["loss"]) and math.isfinite(r["grad_norm"]) and r["grad_norm"] > 0 and all(k in r for k in need) for r in rows)
-    ok = ok and (not tot or peak < 0.96 * tot)
     g = lambda x, n: float(format(x, f".{n}g"))
     fr = [r.get("frames") for r in rows]; lo = [g(r["loss"], 4) for r in rows]; gr = [g(r["grad_norm"], 3) for r in rows]
     ti = [round(r["t_iter"] / 60, 1) for r in rows]; tr = [round(r.get("t_reward", 0) / 60, 1) for r in rows]
@@ -141,15 +142,17 @@ def main():
             prev = out / f"previous-{time.strftime('%Y%m%d-%H%M%S')}"; prev.mkdir()
             for f in old: f.rename(prev / f.name)
             print(f"moved {len(old)} files of an earlier run to {prev}", flush=True)
-        if (out / "queue").exists():               # unanswered requests of an earlier run would be scored first, eating the reward budget
-            (out / "queue").rename(out / f"queue.previous-{time.strftime('%Y%m%d-%H%M%S')}")
+    if (out / "queue").exists():                   # fresh run or resume: unanswered requests of the earlier attempt would be
+        (out / "queue").rename(out / f"queue.previous-{time.strftime('%Y%m%d-%H%M%S')}")   # scored first, eating the reward budget
     if c["run"].get("smoke", True) and not c["run"].get("resume"):
         shutil.rmtree(out / "smoke", ignore_errors=True)                     # the smoke verdict counts metrics rows: start empty
         rc, peak = train(c, out / "smoke", 2, 100, out / "smoke" / "train.log", smoke=True)
-        if rank == 0: ok, msg = smoke_check(out / "smoke", c, peak)    # metrics live on the head node
+        # the verdict (finite loss and gradients, every reward term, peak memory on every rank) is decided jointly in
+        # train.py and returned as rc on every node; a node-local criterion here could pass on some nodes and fail on others
+        if rank == 0: ok, msg = smoke_check(out / "smoke", c, peak)    # metrics live on the head node (report)
         else:
             tot = int(subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits", "-i", str(c["run"]["train_gpus"][0])], capture_output=True, text=True).stdout.strip() or 0)
-            ok = rc == 0 and (not tot or peak < 0.96 * tot); msg = f"{'OK' if ok else 'FAIL'} (node {c['run']['node_rank']}: training rc {rc}, peak MiB {peak}/{tot})"
+            ok = rc == 0; msg = f"{'OK' if ok else 'FAIL'} (node {c['run']['node_rank']}: training rc {rc}, peak MiB {peak}/{tot})"
         print(f"smoke: {msg}", flush=True); (out / "smoke" / "verdict.txt").write_text(msg + "\n")
         if not ok or rc: sys.exit(f"smoke failed (rc={rc}); see {out}/smoke/train.log")
         if c["run"].get("smoke_only"): return

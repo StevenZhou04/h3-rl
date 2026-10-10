@@ -55,6 +55,17 @@ ports (on AWS: a security-group rule allowing all traffic from the group itself,
 by default; `run.reward_service: http://<host>:8800` sends them to `python -m h3rl.rewards.service` on dedicated
 reward nodes instead, so every training GPU trains.
 
+Large runs (8+ nodes):
+- Prompts follow one shuffled walk through the pool shared by all ranks, so an iteration repeats no prompt while the
+  pool is large enough. Use a pool several times larger than the prompts per iteration (`world / ranks_per_group x
+  prompts_per_step`); `prompts/t2va_pool_v2.jsonl` has ~2,000 5 s prompts.
+- `algo.ranks_per_group` splits each group over that many ranks (fewer rollouts per rank, shorter iterations). It must
+  divide `group_size`, the world size and `grad_accum`; each optimizer step then sees `ranks_per_group` x fewer samples
+  per rank, so revisit the learning rate when comparing with `ranks_per_group: 1`.
+- Keep rewards on each node (the default); one `run.reward_service` host has too few GPUs for many training nodes.
+- `run.keep_videos_every` (default 5) keeps the rollout videos of every 5th iteration only (1: all, 0: none).
+- `run.rendezvous_timeout_s` (default 3600) is how long nodes wait for each other at start.
+
 The repo, `run.out` and the text cache may live on storage the nodes share (NFS, FSx). Node 0 writes `run.out`
 (metrics, checkpoints) and node i > 0 writes `run.out/node<i>` (its reward queue, logs and rollouts), so nodes never
 write the same files. When launching from a machine other than the nodes, set `H3RL_REPO` to the repo path on the nodes.

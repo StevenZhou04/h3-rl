@@ -40,3 +40,21 @@ def encodings_needed(c: dict, pool: list) -> list[dict]:
             k = text_key(r, h, w)
             if k not in seen: seen.add(k); out.append(dict(r, _key=k, _h=h, _w=w))
     return out
+
+
+@functools.lru_cache(maxsize=8)
+def _order(seed: int, frames: int, epoch: int, n: int) -> tuple[int, ...]:
+    import random
+    return tuple(random.Random(f"{seed}:{frames}:{epoch}").sample(range(n), n))
+
+
+def draw(cand: list, seed: int, frames: int, start: int, n: int) -> list:
+    """Prompts for slots start .. start+n-1 of one shuffled walk through `cand` shared by all ranks: every prompt is used
+    once per pass (a new order each pass), so the groups of an iteration only repeat a prompt when the iteration needs
+    more prompts than the pool has, or straddles two passes. Depends only on its arguments: every rank, and a resumed
+    run, gets the same prompts for the same slots."""
+    out = []
+    for s in range(start, start + n):
+        epoch, pos = divmod(s, len(cand))
+        out.append(cand[_order(seed, frames, epoch, len(cand))[pos]])
+    return out
