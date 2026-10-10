@@ -85,6 +85,17 @@ def main():
         with torch.no_grad():
             for p in params: dist.broadcast(p.data, src=0)
     algo = ALGORITHMS[ac["name"]](ac, T)
+    RPG = algo.ranks_per_group(); G = algo.group_size()
+    if RPG > 1:                       # a prompt group spread over RPG consecutive ranks; each makes G / RPG of its rollouts
+        bad = ("" if algo.supports_group_split() else f"{ac['name']} does not support ranks_per_group > 1") or \
+              ("" if G % RPG == 0 and world % RPG == 0 else f"ranks_per_group {RPG} must divide group_size {G} and world size {world}") or \
+              ("" if not per_group else f"group reward workers {per_group} need a whole group on one rank (ranks_per_group 1)") or \
+              ("" if int(ac.get("grad_accum", 4)) % RPG == 0 else f"ranks_per_group {RPG} must divide grad_accum {ac.get('grad_accum', 4)}")
+        if bad:
+            if world > 1: dist.destroy_process_group()
+            raise SystemExit(bad)
+    team, sub = rank // RPG, rank % RPG; mine = list(range(sub * G // RPG, (sub + 1) * G // RPG))   # this rank's members of each group
+    prompt_rng = T.rng if RPG == 1 else random.Random(int(run.get("seed", 0)) * 1000 + 500000 + team + 7919 * a.start_iter)
     if st is not None:
         algo.load(st["algo"])
         if extra is not None: algo.load_tensors(extra["algo"])
@@ -105,7 +116,7 @@ def main():
         if not enough:
             if world > 1: dist.destroy_process_group()
             raise SystemExit(f"rank {rank}: {len(cand)} encoded prompts for {frames} frames, need {algo.prompts_per_step()} (run through h3rl.launch to encode)")
-        prompts = T.rng.sample(cand, algo.prompts_per_step()); samples = []
+        prompts = prompt_rng.sample(cand, algo.prompts_per_step()); samples = []   # the RPG ranks of a team draw the same prompts
         rtext = lambda s: s["prompt"].get("reward_prompt") or s["prompt"]["prompt"]
         meta = lambda s: {"camera_move": s["prompt"].get("camera_move"), "audio_prompt": s["prompt"].get("audio_prompt"), "rl_progress": it / max(a.iters, 1)}
         for j, pr in enumerate(prompts):
@@ -116,10 +127,13 @@ def main():
                 fr = load_image_frames(pr["image"], width=w, height=h); latent, geometry = encode_condition_latent(fr, models["video_vae"], device); cond_px = np.asarray(fr[0])
             ctx = build_context(pr["prompt"], hs, tags, lcfg, device, task=pr["task"], condition_latent=latent, condition_geometry=geometry,
                                 condition_path=pr.get("image") or "first_frame.png", condition_frame=cond_px)
-            seed = int(np.random.SeedSequence([int(run.get("seed", 0)), it, rank, j]).generate_state(1)[0])   # distinct per (iteration, rank, prompt)
-            for k, s in enumerate(algo.rollout(ctx, pr, seed)):
+            owner = rank if RPG == 1 else team                       # RPG == 1: exactly the seeds of earlier runs
+            seed = int(np.random.SeedSequence([int(run.get("seed", 0)), it, owner, j]).generate_state(1)[0])   # distinct per (iteration, group, prompt)
+            for i, s in enumerate(algo.rollout(ctx, pr, seed, None if RPG == 1 else mine)):
+                k = s.get("member", i)
                 key = f"{tag}_it{it:04d}_r{rank}_p{j}_k{k}"; mp4 = f"{out}/rollouts/it{it:04d}/{key}.mp4"; os.makedirs(os.path.dirname(mp4), exist_ok=True)
-                s.update(key=key, mp4=mp4, guard=decode_and_write(models, s["video"], s["audio"], mp4, device), ctx=ctx, prompt=pr, group=j)
+                s.update(key=key, mp4=mp4, guard=decode_and_write(models, s["video"], s["audio"], mp4, device), ctx=ctx, prompt=pr, group=j,
+                         gid=f"{team if RPG > 1 else rank}:{j}", member=k)
                 samples.append(s); json.dump({"key": key, "pid": pr.get("pid"), "prompt": pr.get("prompt"), "task": pr.get("task"), "seed": s.get("seed"),
                                                      "frames": frames, "height": h, "width": w, "guard": s["guard"]}, open(mp4[:-4] + ".json", "w"))
                 rq.submit(key, mp4, rtext(s), per_video, meta(s))   # scored while the next rollouts sample (rewards overlap rollouts)
@@ -141,7 +155,7 @@ def main():
         everyone = batch
         if world > 1:                 # every rank updates the reward statistics with the whole iteration (same stats on every rank)
             parts = [None] * world; dist.all_gather_object(parts, batch); everyone = [x for part in parts for x in part]
-        for s, R in zip(samples, comb.score_batch(batch, observe=everyone)): s["R"] = R
+        for s, Rs in zip(samples, comb.score_batch(batch, observe=everyone)): s["R"] = Rs
         t_rew = time.time() - t0 - t_roll
         mt = algo.update(samples, it)
         Rv = [s["R"]["video"] for s in samples if s["R"]["video"] is not None]

@@ -30,13 +30,17 @@ class NFT(Algorithm):
     def _canvas(self):
         c = self.T.canvas; self.cfg.frame_count, self.cfg.height, self.cfg.width = c["frames"], c["height"], c["width"]
 
-    def rollout(self, ctx, prompt, seed):
-        """Yields the group's samples one by one (the caller decodes and submits each for reward while the next samples).
-        The old policy stays swapped in until the generator is exhausted or closed; consume it fully before updating."""
-        self._canvas()
+    def supports_group_split(self) -> bool: return True
+
+    def rollout(self, ctx, prompt, seed, members=None):
+        """Yields the group's samples (or this rank's `members` of it) one by one: the caller decodes and submits each for
+        reward while the next samples. Member k is seeded seed + k on whichever rank makes it. The old policy stays swapped
+        in until the generator is exhausted or closed; consume it fully before updating."""
+        self._canvas(); ks = list(range(self.cfg.group_size)) if members is None else list(members)
         with swapped_params(self.T.params, self.old):                 # data collection uses the old policy
-            yield from iter_samples(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
-                                    [seed + k for k in range(self.cfg.group_size)])
+            for k, smp in zip(ks, iter_samples(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
+                                               [seed + k for k in ks])):
+                yield dict(smp, member=k)
 
     def _step(self):
         T = self.T
@@ -47,26 +51,46 @@ class NFT(Algorithm):
     def update(self, samples, iteration):
         T, cfg = self.T, self.cfg; self._canvas()
         sd = {k: self._global_sd([s["R"][k] for s in samples]) if self.global_std else None for k in ("video", "audio")}
-        for g in sorted({s["group"] for s in samples}):
-            grp = [s for s in samples if s["group"] == g]
-            rv = group_r([s["R"]["video"] for s in grp], cfg.z_floor, sd["video"], clip=cfg.adv_clip_max)
-            ra = group_r([s["R"]["audio"] for s in grp], cfg.z_floor, sd["audio"], clip=cfg.adv_clip_max)
-            for s, v, u in zip(grp, rv, ra): s["r_video"], s["r_audio"] = v, u
+        groups = self._groups(samples)          # gid -> every member's rewards, gathered from all ranks sharing the group
+        for gid, members in groups.items():
+            ks = sorted(members)
+            rv = group_r([members[k][0] for k in ks], cfg.z_floor, sd["video"], clip=cfg.adv_clip_max)
+            ra = group_r([members[k][1] for k in ks], cfg.z_floor, sd["audio"], clip=cfg.adv_clip_max)
+            r_of = {k: (v, u) for k, v, u in zip(ks, rv, ra)}
+            for s in samples:
+                if s["gid"] == gid: s["r_video"], s["r_audio"] = r_of[s["member"]]
         T.transformer.train(); T.network.set_multiplier(1.0); self.opt.zero_grad(set_to_none=True)
         parts, n, gn = [], 0, 0.0
+        ga = cfg.grad_accum // self.ranks_per_group()   # R ranks each hold 1/R of a group: same samples per optimizer step overall
         for _ in range(cfg.epochs_per_batch):
             order = list(range(len(samples))); T.rng.shuffle(order)
             for i in order:
                 s = samples[i]
                 parts.append(nft_loss(T.transformer, T.network, T.params, self.old, s, s["ctx"], s["r_video"], s["r_audio"], cfg,
-                                      T.schedule, T.device, T.rng, loss_scale=1.0 / cfg.grad_accum)); n += 1
-                if n % cfg.grad_accum == 0: gn = self._step()
-        if n % cfg.grad_accum: gn = self._step()
+                                      T.schedule, T.device, T.rng, loss_scale=1.0 / ga)); n += 1
+                if n % ga == 0: gn = self._step()
+        if n % ga: gn = self._step()
         ema_update(self.old, T.params, min(cfg.ema_slope * self.n_updates, cfg.ema_max))
         rv = [s["r_video"] for s in samples if s["r_video"] is not None]
         logged = ("loss", "loss_policy", "loss_kl", "kl_video", "kl_audio", "loss_video", "loss_audio", "fm_video")
         mean = {k: float(np.mean([p[k] for p in parts if k in p])) for k in logged if any(k in p for p in parts)}
         return dict(**mean, r_video_mean=float(np.mean(rv)) if rv else 0.0, grad_norm=gn, n_updates=float(self.n_updates))
+
+    def _groups(self, samples):
+        """{gid: {member: (R video, R audio)}} for this rank's groups, with the members other ranks sampled (ranks_per_group > 1)."""
+        mine = [(s["gid"], s["member"], s["R"]["video"], s["R"]["audio"], (s.get("prompt") or {}).get("pid")) for s in samples]
+        if self.ranks_per_group() > 1 and self.T.world > 1:
+            import torch.distributed as dist
+            parts = [None] * self.T.world; dist.all_gather_object(parts, mine); rows = [x for p in parts for x in p]
+        else: rows = mine
+        local = {g for g, *_ in mine}; out, pids = {}, {}
+        for g, k, v, u, pid in rows:
+            if g in local: out.setdefault(g, {})[k] = (v, u); pids.setdefault(g, set()).add(pid)
+        n = self.cfg.group_size
+        for g, m in out.items():
+            if sorted(m) != list(range(n)): raise RuntimeError(f"group {g}: members {sorted(m)}, expected 0..{n - 1}")
+            if len(pids[g]) > 1: raise RuntimeError(f"group {g} mixes prompts {sorted(map(str, pids[g]))}: the ranks of a team drew different prompts")
+        return out
 
     def _global_sd(self, values):
         """Std of every valid (not missing, not gated) reward of this iteration over all ranks (reference global_std)."""

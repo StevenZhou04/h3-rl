@@ -31,7 +31,9 @@ class GRPO(Algorithm):
     def _canvas(self):
         c = self.T.canvas; self.cfg.frame_count, self.cfg.height, self.cfg.width = c["frames"], c["height"], c["width"]
 
-    def rollout(self, ctx, prompt, seed):
+    def rollout(self, ctx, prompt, seed, members=None):
+        if members is not None and list(members) != list(range(self.cfg.group_size)):
+            raise NotImplementedError("GRPO samples whole groups on one rank (ranks_per_group must be 1)")
         self._canvas(); T = self.T
         trust = {"pos": self.ref_pos, "vel": self.ref_vel} if (self.ref_pos is not None or self.ref_vel is not None) else None
         torch.manual_seed(seed)
