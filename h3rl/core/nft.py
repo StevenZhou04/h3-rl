@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import numpy as np, torch
 
+from h3rl.core import hyperflow
 from h3rl.core.grpo import GRPOConfig, decode_rollout_to_video
 from h3rl.core.sde import h3_sde_step
 from h3rl.core.video_metrics import compute_video_metrics
@@ -64,20 +65,21 @@ def sample_group(transformer, network, ctx: dict, cfg: NFTConfig, schedule, devi
     layout = ctx["layout"]; out = []
     network.set_multiplier(1.0)
     for seed in seeds:
-        gen = torch.Generator(device="cpu").manual_seed(int(seed))
-        vis_cond, aud_cond = augment_condition_latents(ctx["raw_visual_conditions"], ctx["audio_condition_latents"], generator=gen,
-                                                       visual_clean=ctx["visual_condition_clean"], device=device)
+        gen = torch.Generator(device="cpu").manual_seed(int(seed))   # as sample_joint_av_latents: target noise first, then conditions
         video, audio = initialize_target_latents(
             video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
-            audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames), generator=gen, device=device)
+            audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames), generator=gen, device=device,
+            video_dtype=torch.float32, audio_dtype=torch.float32)   # the official sampler keeps the ODE state in fp32
+        vis_cond, aud_cond = augment_condition_latents(ctx["raw_visual_conditions"], ctx["audio_condition_latents"], generator=gen,
+                                                       visual_clean=ctx["visual_condition_clean"], device=device)
         for i in range(cfg.infer_steps):
             sv, svn = schedule.video[i], schedule.video[i + 1]; sa, san = schedule.audio[i], schedule.audio[i + 1]
             pred = transformer(video_latents=video, audio_latents=audio, text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
                                layout=layout, model_t_video=1.0 - sv, model_t_audio=1.0 - sa, visual_condition_latents=vis_cond,
                                audio_condition_latents=aud_cond, visual_condition_clean=ctx["visual_condition_clean"])
             video, _, _, _ = h3_sde_step(video, pred.video, sv, svn, schedule.video[1], noise_level=0.0)
-            audio, _, _, _ = h3_sde_step(audio, pred.audio, sa, san, schedule.audio[1], noise_level=0.0)
-            video, audio = video.to(torch.bfloat16), audio.to(torch.bfloat16)
+            audio, _, _, _ = h3_sde_step(audio, pred.audio, sa, san, schedule.audio[1], noise_level=0.0)   # fp32 (no bf16 round trip:
+                                                                                                         # early steps move latents by < 1 bf16 ulp)
         out.append(dict(seed=int(seed), video=video.cpu(), audio=audio.cpu(),
                         vis_cond=tuple(t.cpu() for t in vis_cond), aud_cond=tuple(t.cpu() for t in aud_cond)))
     return out
@@ -95,7 +97,8 @@ def decode_and_write(models: dict, video_lat: torch.Tensor, audio_lat: torch.Ten
     p = subprocess.Popen(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(fps), "-i", "-",
                           "-i", wav_path, "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", path],
                          stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    p.stdin.write(np.ascontiguousarray(vid).tobytes()); p.stdin.close(); p.wait()
+    p.stdin.write(np.ascontiguousarray(vid).tobytes()); p.stdin.close()
+    if p.wait() != 0 or not os.path.exists(path): print(f"WARNING: ffmpeg could not write {path}; its rewards will be missing", flush=True)
     try: os.remove(wav_path)
     except OSError: pass
     return metrics
@@ -135,13 +138,15 @@ def ema_update(old: list, params: list, eta: float):
         for o, p in zip(old, params): o.mul_(eta).add_(p.data, alpha=1.0 - eta)
 
 
-def draw_sigma(grid: list[float], jitter: float, rng: random.Random) -> float:
-    """One of the sampler's interior sigmas, jittered within half the gap to its neighbours."""
+def draw_sigma(grid: list[float], jitter: float, rng: random.Random, i: int | None = None) -> tuple[float, float]:
+    """Sampler step i's sigma (random step if None), jittered within half the gap to its neighbours, and the grid sigma that
+    step lands on (HyperFlow's two-time endpoint: it belongs to the step, not to wherever the jitter went)."""
     interior = [float(s) for s in grid[:-1]]                      # exclude the final 0.0
-    i = rng.randrange(len(interior)); s = interior[i]
+    if i is None: i = rng.randrange(len(interior))
+    s = interior[i]
     lo = (interior[i + 1] if i + 1 < len(interior) else 0.0); hi = (interior[i - 1] if i > 0 else 1.0)
-    s = s + rng.uniform(-jitter, jitter) * min(s - lo, hi - s)
-    return float(min(max(s, 0.02), 0.995))
+    s = s + rng.uniform(-jitter, jitter) * min(s - lo, hi - s)    # step 0 (sigma 1, pure noise) has no room above: it stays at 1.0
+    return float(min(max(s, 0.02), 1.0)), float(grid[i + 1])
 
 
 def nft_loss(transformer, network, params: list, old_params: list, sample: dict, ctx: dict, r_video: float | None, r_audio: float | None,
@@ -149,12 +154,17 @@ def nft_loss(transformer, network, params: list, old_params: list, sample: dict,
     """One sample's NFT loss at cfg.timesteps_per_sample noise levels; backward() per level (grads accumulate into the LoRA)."""
     n = max(1, int(cfg.timesteps_per_sample)); parts = []
     if n >= len(schedule.video) - 1:                              # every sampler step, as the reference
-        levels = [(float(schedule.video[i]), float(schedule.audio[i])) for i in range(len(schedule.video) - 1)]
+        levels = [((float(schedule.video[i]), float(schedule.video[i + 1])), (float(schedule.audio[i]), float(schedule.audio[i + 1])))
+                  for i in range(len(schedule.video) - 1)]
     else:
-        levels = [(draw_sigma(schedule.video, cfg.sigma_jitter, rng), draw_sigma(schedule.audio, cfg.sigma_jitter, rng)) for _ in range(n)]
-    for sv, sa in levels:
-        parts.append(_nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video, r_audio, cfg, device, rng,
-                                  loss_scale / len(levels), sv, sa))
+        levels = []
+        for _ in range(n):                                        # one sampler step for both modalities, as the sampler moves them
+            i = rng.randrange(len(schedule.video) - 1)
+            levels.append((draw_sigma(schedule.video, cfg.sigma_jitter, rng, i), draw_sigma(schedule.audio, cfg.sigma_jitter, rng, i)))
+    for (sv, ev), (sa, ea) in levels:
+        with hyperflow.endpoints(transformer, ev, ea):
+            parts.append(_nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video, r_audio, cfg, device, rng,
+                                      loss_scale / len(levels), sv, sa))
     out = {k: float(np.mean([p[k] for p in parts if k in p])) for k in parts[0]}
     return out
 
@@ -191,20 +201,23 @@ def _nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video,
     ref_v = ref_a = None
     if cfg.kl_beta > 0:
         network.set_multiplier(0.0)
-        with torch.no_grad(): ref = fwd(); ref_v, ref_a = ref.video.float(), ref.audio.float(); del ref
-        network.set_multiplier(1.0)
+        try:
+            with torch.no_grad(): ref = fwd(); ref_v, ref_a = ref.video.float(), ref.audio.float(); del ref
+        finally: network.set_multiplier(1.0)
     pred = fwd(); vt_v, vt_a = pred.video.float(), pred.audio.float()
     b = cfg.beta; x0vf, x0af = x0v.float(), x0a.float()
     branch = lambda vo, vt, xt, sigma, x0, r: nft_branch(vo, vt, xt.float(), sigma, x0, r, b)
     kl_w = cfg.kl_beta * b / cfg.adv_clip_max
     loss = torch.zeros((), device=device); parts = {}
     if r_video is not None:
-        lv = branch(vo_v, vt_v, xtv, sv, x0vf, r_video); loss = loss + lv; parts["loss_video"] = float(lv)
-        if ref_v is not None: kv = ((vt_v - ref_v) ** 2).mean(); loss = loss + kl_w * kv; parts["kl_video"] = float(kv)
+        lv = branch(vo_v, vt_v, xtv, sv, x0vf, r_video); loss = loss + lv; parts["loss_video"] = float(lv.detach())
     if r_audio is not None:
-        la = branch(vo_a, vt_a, xta, sa, x0af, r_audio); loss = loss + cfg.audio_loss_weight * la; parts["loss_audio"] = float(la)
-        if ref_a is not None: ka = ((vt_a - ref_a) ** 2).mean(); loss = loss + cfg.audio_loss_weight * kl_w * ka; parts["kl_audio"] = float(ka)
+        la = branch(vo_a, vt_a, xta, sa, x0af, r_audio); loss = loss + cfg.audio_loss_weight * la; parts["loss_audio"] = float(la.detach())
+    # KL to the base model on both branches whatever the rewards (the reference always applies it): the LoRA is shared by
+    # the video and audio rows, so a branch without a reward (audio under video-only configs) would otherwise drift freely
+    if ref_v is not None: kv = ((vt_v - ref_v) ** 2).mean(); loss = loss + kl_w * kv; parts["kl_video"] = float(kv.detach())
+    if ref_a is not None: ka = ((vt_a - ref_a) ** 2).mean(); loss = loss + cfg.audio_loss_weight * kl_w * ka; parts["kl_audio"] = float(ka.detach())
     if loss.requires_grad: (loss * loss_scale).backward()
-    parts.update(loss=float(loss), sigma_v=sv, sigma_a=sa, fm_video=float(((vt_v - tv) ** 2).mean()))
+    parts.update(loss=float(loss.detach()), sigma_v=sv, sigma_a=sa, fm_video=float(((vt_v.detach() - tv) ** 2).mean()))
     del pred, old, vo_v, vo_a, vt_v, vt_a, loss, ref_v, ref_a
     return parts

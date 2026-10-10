@@ -7,10 +7,10 @@ produces (the camera-motion LoRA run earlier in this project produced intermitte
 that no frame-sampled judge would reliably catch). They are computed on EVERY decoded frame, cost
 nothing, and cannot be argued with, which also makes them harder to reward-hack than a rubric.
 
-Each metric named in GUARDRAIL_KEYS returns a number in [0, 1] where 1.0 means "clean". They are multiplied into the
-scalar reward rather than averaged with the judge axes: a video with black frames is broken
-regardless of how well it followed the prompt, and averaging would let a high prompt_following
-score hide it.
+Each metric named in GUARDRAIL_KEYS returns a number in [0, 1] where 1.0 means "clean". is_broken() turns them into a
+verdict that ranks the rollout last in its group (rewards.combine) rather than averaging them with the judge axes: a video
+with black frames is broken regardless of how well it followed the prompt, and averaging would let a high
+prompt_following score hide it.
 
 Deliberately NOT a guardrail: "the video has motion". A prompt in this set may legitimately ask
 the camera and subject to hold perfectly still, so penalizing stillness unconditionally would
@@ -81,3 +81,16 @@ def compute_video_metrics(frames: np.ndarray) -> dict[str, float]:
 # synthetic flat-color test clip tripped it at std=2.4 during bring-up). Black frames and
 # strobing have no legitimate reading, so those two gate; contrast is logged for diagnosis.
 GUARDRAIL_KEYS = ("black_frame_free", "flicker_free")
+
+# Measured on 6.8k HyperFlow rollouts (2026-10-10): 2% have at least one dead frame (mostly a run of them: a fade or cut
+# to black); single luma jumps are common (27% of clips, cuts and lighting changes) but never exceed 5% of transitions.
+MAX_BLACK_FRAMES = 0          # any dead frame is broken: a one-frame black flash is the failure this exists to catch
+MAX_FLICKER_FRACTION = 0.05   # strobing = luma jumps on more than 5% of transitions; isolated jumps are left to the judges
+
+
+def is_broken(metrics: dict) -> bool:
+    """True if the rollout has a dead (black) frame or strobes. `metrics` is compute_video_metrics' output."""
+    frac = 1.0 - metrics.get("black_frame_free", 1.0); n = int(metrics.get("frame_count", 0) or 0)
+    black = round(frac * n) if n else (1 if frac > 1e-9 else 0)        # without a frame count: any black fraction counts
+    return black > MAX_BLACK_FRAMES or (1.0 - metrics.get("flicker_free", 1.0)) > MAX_FLICKER_FRACTION + 1e-9
+

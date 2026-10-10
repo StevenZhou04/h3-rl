@@ -18,7 +18,7 @@ musubi only strips the `transformer.` prefix, so a diffusers LoRA attaches to 0 
 The file header (sampling sigma grid, shifts, gate) is kept: the trainer reads the 8-step grid from it.
 """
 from __future__ import annotations
-import argparse, re
+import argparse, contextlib, re
 from collections import defaultdict
 from pathlib import Path
 import torch
@@ -91,17 +91,19 @@ def convert(src: str, dst: str, verbose: bool = True) -> dict:
         for i, u in enumerate(ups): b[row:row + u.shape[0], i * r:(i + 1) * r] = u; row += u.shape[0]
         out[f"{musubi_key(target)}.lora_down.weight"] = torch.cat(downs, dim=0); out[f"{musubi_key(target)}.lora_up.weight"] = b
         out[f"{musubi_key(target)}.alpha"] = torch.tensor(alpha * 3.0, dtype=torch.float32); fused_n += 1
+    if dropped:   # the official loader rejects any key it cannot place; a silently dropped LoRA module changes the model
+        raise ValueError(f"{src}: {sum(dropped.values())} LoRA tensors could not be converted: {dict(dropped)}")
     new_meta = dict(meta, converted_from="videorebirth/hyperflow diffusers layout", converted_rank_qkv=str(rank * 3), format="pt",
                     h3rl_conversion=str(CONVERSION_VERSION))
     Path(dst).parent.mkdir(parents=True, exist_ok=True); save_file(out, dst, metadata={k: str(v) for k, v in new_meta.items()})
-    if verbose:
-        print(f"wrote {dst}: {len(out)} tensors ({direct} direct, {fused_n} fused qkv modules)")
-        for reason, n in sorted(dropped.items(), key=lambda x: -x[1]): print(f"   dropped {n:>4}  {reason}")
+    if verbose: print(f"wrote {dst}: {len(out)} tensors ({direct} direct, {fused_n} fused qkv modules), nothing dropped")
     return dict(direct=direct, fused=fused_n, dropped=dict(dropped))
 
 
 
 # ----------------------------------------------------------------------------- two-time conditioning at run time
+AUDIO_T_NUDGE = 1e-4   # added to audio's model time when it equals video's, so the two rows (and endpoints) stay separate
+
 def has_endpoint_lora(path: str) -> bool:
     from safetensors import safe_open
     with safe_open(path, framework="pt") as f: return any(k.startswith("lora_unet_endpoint_time_embedder") for k in f.keys())
@@ -119,22 +121,40 @@ def install_two_time(transformer, gate: float) -> None:
     if getattr(transformer, "_two_time", None) is not None: return
     if transformer.time_embedder is None: raise ValueError("HyperFlow two-time conditioning needs the unpruned time embedder")
     transformer.endpoint_time_embedder = copy.deepcopy(transformer.time_embedder)
-    st = transformer._two_time = {"gate": float(gate), "video": None, "audio": None, "t_video": None, "t_audio": None}
+    st = transformer._two_time = {"gate": float(gate), "video": None, "audio": None, "t_video": None, "t_audio": None, "endpoints": None}
 
-    def pre(_mod, _args, kwargs):                                  # remember this forward's target-row model times
-        st["t_video"], st["t_audio"] = kwargs.get("model_t_video"), kwargs.get("model_t_audio")
+    def pre(_mod, args, kwargs):                                   # remember this forward's target-row model times
+        tv, ta = kwargs.get("model_t_video"), kwargs.get("model_t_audio")
+        if tv is not None and ta is not None and abs(float(tv) - float(ta)) < AUDIO_T_NUDGE / 2:
+            # musubi embeds unique times only, so equal video/audio times would share one row and one endpoint (the
+            # reference keys rows by (t, r)). Nudge audio's time so both rows exist; emb(t + 1e-4) ~ emb(t).
+            ta = float(ta) + AUDIO_T_NUDGE; kwargs = {**kwargs, "model_t_audio": ta}
+        st["t_video"], st["t_audio"] = tv, ta
+        return args, kwargs
 
     def post(_mod, inp, out):
         if st["video"] is None: raise RuntimeError("HyperFlow: call hyperflow.bind_schedule(transformer, schedule) before sampling")
-        t = inp[0].to(torch.float32); r = t.clone()
-        for key, grid in (("t_video", st["video"]), ("t_audio", st["audio"])):
-            mt = st[key]
+        t = inp[0].to(torch.float32); r = t.clone(); ends = st["endpoints"] or {}
+        for key, grid in (("video", st["video"]), ("audio", st["audio"])):
+            mt = st["t_" + key]
             if mt is None: continue
-            mt = float(mt); r = torch.where((t - mt).abs() < 1e-6, torch.full_like(t, 1.0 - next_sigma(grid, 1.0 - mt)), r)
+            mt = float(mt); end = ends.get(key, next_sigma(grid, 1.0 - mt))   # explicit endpoint (NFT's off-grid sigmas) or the sampler's next sigma
+            r = torch.where((t - mt).abs() < 1e-6, torch.full_like(t, 1.0 - end), r)
         return out + st["gate"] * (transformer.endpoint_time_embedder(r) - out)
 
     transformer.register_forward_pre_hook(pre, with_kwargs=True)
     transformer.time_embedder.register_forward_hook(post)
+
+
+@contextlib.contextmanager
+def endpoints(transformer, video: float, audio: float):
+    """Use these endpoint sigmas (the grid sigma each modality's step lands on) for forwards inside the block, instead
+    of deriving them from t. Training draws sigmas between grid points; the endpoint must stay the sampler's next one."""
+    st = getattr(transformer, "_two_time", None)
+    if st is None: yield; return
+    st["endpoints"] = {"video": float(video), "audio": float(audio)}
+    try: yield
+    finally: st["endpoints"] = None
 
 
 def bind_schedule(transformer, schedule) -> None:

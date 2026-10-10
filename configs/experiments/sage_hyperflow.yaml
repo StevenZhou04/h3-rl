@@ -1,13 +1,18 @@
 # SAGE-GRPO on the 8-step HyperFlow-distilled MiniMax-H3 (scripts/download_weights.py --hyperflow).
 # Note: RL directly on a step-distilled model can wear down its few-step quality; watch frame quality across checkpoints.
 algo: configs/algo/sage_grpo.yaml
+algo_overrides:
+  # HyperFlow's video grid starts at sigma .994, .984, .966, ...: SDE noise scales as noise_level * sqrt(sigma / (1 - sigma)),
+  # so std_dev_t would be ~8.9 at the first step with 0.7. 0.3 gives std_dev_t 3.8 -> 0.45 over the stochastic steps
+  # (Flow-GRPO's SD3 setup peaks at ~3.6); injected per-step std ~0.30 -> 0.17. Untuned.
+  noise_level: 0.3
 reward: configs/reward/mix_v1.yaml
 model:
   hyperflow: default       # $H3RL_MODELS/loras/hyperflow_musubi.safetensors; or a path to another converted HyperFlow LoRA
   infer_steps: null        # taken from the HyperFlow file (8)
 data:
   pool: prompts/example_pool.jsonl
-  frames: [124, 243]
+  frames: [124]            # 5 s clips only for now (124 frames at 24 fps); [124, 243] alternates 5 s and 10 s per iteration
   size: [544, 960]
   frame_sizes: {243: [480, 832]}
 run:

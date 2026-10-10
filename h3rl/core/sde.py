@@ -93,7 +93,7 @@ def h3_sde_step(
     Euler step -- see the self-test below.
 
     THE FINAL STEP MUST BE TAKEN WITH noise_level=0. H3's shifted schedule ends
-    with a very large drop (8 steps: ... 0.8 -> 0.632 -> 0.0), so at the last
+    with a very large drop (8 linspace steps: ... 0.8 -> 0.632 -> 0.0; HyperFlow: 0.469 -> 0.0), so at the last
     step std_dev_t = sqrt(0.632/0.368)*0.7 = 0.92 and the injected noise is
     std 0.73 -- added to the FINAL latent with no remaining step to denoise it.
     Measured with an oracle velocity (sde_oracle_test.py): integrating all steps
@@ -116,13 +116,13 @@ def h3_sde_step(
     # flow_grpo's `prev_sample_mean = sample*(1+std^2/(2*sigma)*dt) +
     # model_output*(1+std^2*(1-sigma)/(2*sigma))*dt` (sde_type='sde' branch) --
     # see module docstring for the full derivation.
-    mean = sample * (1.0 - (std_dev_t**2) / (2.0 * sigma) * dt) + velocity * (
-        1.0 + (std_dev_t**2) * (1.0 - sigma) / (2.0 * sigma)
-    ) * dt
-
     step_std = std_dev_t * torch.sqrt(dt)  # dt > 0 here (opposite of their dt<0), so sqrt(dt) directly
     if precise_std and noise_level > 0.0:
         step_std = precise_step_std(sigma, sigma_next, sigma_near_max, noise_level)   # SAGE-GRPO (backbone B)
+    # mean = x + v dt + (var / 2) * score, score = (-x + (1 - sigma) v) / sigma. With var = std_dev_t^2 dt this is flow_grpo's
+    # first-order mean; with the precise variance it is SAGE-GRPO Eq. 7 (score term and noise use the same variance).
+    var = step_std**2
+    mean = sample * (1.0 - var / (2.0 * sigma)) + velocity * (dt + var * (1.0 - sigma) / (2.0 * sigma))
 
     if prev_sample is None:
         noise = torch.randn(velocity.shape, generator=generator, device=velocity.device, dtype=velocity.dtype)

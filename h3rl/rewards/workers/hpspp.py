@@ -17,7 +17,8 @@ class HPSPP(Worker):
     def score(self, reqs):
         out = []
         for r in reqs:
-            frames = sample_frames(r["mp4"], self.n_frames, f"{self.tmp}/{r['key']}")
+            try: frames = sample_frames(r["mp4"], self.n_frames, f"{self.tmp}/{r['key']}")
+            except Exception as e: out.append({"key": r["key"], "scores": {}, "error": f"{type(e).__name__}: {e}"}); continue   # this clip only
             meta = r.get("meta") or {}
             it = 0.3 + 0.7 * float(meta["rl_progress"]) if meta.get("rl_progress") is not None else 0.0   # upstream: ramp 0.3 -> 1 during RL
             rw = self.m.reward(prompts=[r["prompt"]] * len(frames), image_paths=frames, iter_step=it)

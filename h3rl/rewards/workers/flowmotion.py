@@ -49,7 +49,8 @@ def clip_flow(path: str) -> tuple[float, float]:
     for t in range(0, len(fr) - 8, 8):
         s = [flow(fr[t + k], fr[t + k + 2]) for k in (0, 2, 4, 6)]
         short += s; coh.append(flow(fr[t], fr[t + 8]) / (sum(s) + 1e-6))
-    return (float(np.mean(short)), float(np.median(coh))) if short else (0.0, 0.0)
+    if not short: raise ValueError(f"{path}: {len(fr)} frames decoded, need at least 9")   # an unreadable clip is an error, not a static one
+    return float(np.mean(short)), float(np.median(coh))
 
 
 class FlowMotionWorker(Worker):
@@ -60,9 +61,11 @@ class FlowMotionWorker(Worker):
         self.pool = ProcessPoolExecutor(int(os.environ.get("FLOW_PROCS", "16")))
 
     def score(self, requests):
-        stats = list(self.pool.map(clip_flow, [r["mp4"] for r in requests]))
+        futs = [self.pool.submit(clip_flow, r["mp4"]) for r in requests]
         out = []
-        for r, (fl, coh) in zip(requests, stats):
+        for r, fu in zip(requests, futs):
+            try: fl, coh = fu.result()
+            except Exception as e: out.append({"key": r["key"], "scores": {}, "error": f"{type(e).__name__}: {e}"}); continue
             static = wants_static(r.get("prompt") or "")
             s = STATIC_SCORE if static else float(np.log1p(min(fl, CAP) * coh ** 3 / FLOOR))
             out.append({"key": r["key"], "scores": {"flow_motion": s, "flow_raw": fl, "flow_coherence": coh, "flow_static_prompt": float(static)}})

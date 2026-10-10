@@ -7,7 +7,7 @@ model:
   infer_steps: null        # taken from the HyperFlow file (8)
 data:
   pool: prompts/example_pool.jsonl
-  frames: [124, 243]
+  frames: [124]            # 5 s clips only for now (124 frames at 24 fps); [124, 243] alternates 5 s and 10 s per iteration
   size: [544, 960]
   frame_sizes: {243: [480, 832]}
 run:

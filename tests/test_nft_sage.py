@@ -26,8 +26,19 @@ check("(c) dL/dr = ||v+-v||^2 - ||v--v||^2", torch.allclose(dLdr, expect.detach(
 rr = T.group_r([0.1, 0.9, 0.5, 0.3], 0.05); check("(d) group_r best->1, worst->0", rr[1] == 1.0 and rr[0] == 0.0, str([round(x, 3) for x in rr]))
 check("(d') constant group -> 0.5", all(x == 0.5 for x in T.group_r([1.0, 1.0, 1.0], 0.05)))
 grid = [1.0, .931506, .839236, .703462, .5, .296538, .160764, .068494, 0.0]; rng = random.Random(1)
-draws = [T.draw_sigma(grid, 0.5, rng) for _ in range(500)]
-check("(e) on-grid sigmas within (0.02, 0.995) and near a grid point", all(0.02 <= s <= 0.995 for s in draws) and all(min(abs(s - g) for g in grid[:-1]) <= 0.12 for s in draws), f"min {min(draws):.3f} max {max(draws):.3f}")
+pairs = [T.draw_sigma(grid, 0.5, rng) for _ in range(500)]; draws = [p[0] for p in pairs]
+check("(e) on-grid sigmas within [0.02, 1.0] and near a grid point", all(0.02 <= s <= 1.0 for s in draws) and all(min(abs(s - g) for g in grid[:-1]) <= 0.12 for s in draws), f"min {min(draws):.3f} max {max(draws):.3f}")
+def step_of(sg): return min(range(len(grid) - 1), key=lambda i: abs(grid[i] - sg))   # jitter < half the gap: nearest point = drawn step
+check("(e') endpoint = the next grid sigma of the drawn step, also when jittered upward",
+      all(e == grid[step_of(sg) + 1] for sg, e in pairs) and any(sg > grid[step_of(sg)] for sg, _ in pairs if step_of(sg) > 0))
+sgrid = [12 * x / (1 + 11 * x) for x in grid]                  # the video grid training actually uses (HyperFlow shift 12)
+sp = [T.draw_sigma(sgrid, 0.5, rng) for _ in range(2000)]
+first = [(sg, e) for sg, e in sp if e == sgrid[1]]
+agrid = [3 * x / (1 + 2 * x) for x in grid]
+check("(e3) a given step index fixes the step for both modalities (endpoints grid[i+1])",
+      all(T.draw_sigma(sgrid, 0.5, rng, i)[1] == sgrid[i + 1] and T.draw_sigma(agrid, 0.5, rng, i)[1] == agrid[i + 1] for i in range(8)))
+check("(e'') shifted grid: step 0 is trained at sigma 1.0 (pure noise) toward the first endpoint; every draw sits above its endpoint",
+      first and all(sg == 1.0 for sg, _ in first) and all(sg > e for sg, e in sp), f"{len(first)} step-0 draws")
 eta = 0.7; near = torch.tensor(0.93)
 for sig, dt in ((0.5, 1e-4), (0.8, 1e-4)):
     s1 = std_dev_t_for_sigma(torch.tensor(sig), near, eta) * math.sqrt(dt); s2 = precise_step_std(torch.tensor(sig), torch.tensor(sig - dt), near, eta)
@@ -39,6 +50,14 @@ check("(f') precise < first-order for a finite step (0.9->0.7)", float(s2) < flo
 s_first = precise_step_std(torch.tensor(1.0), torch.tensor(0.93151), torch.tensor(0.93151), eta)
 s_fo = std_dev_t_for_sigma(torch.tensor(1.0), torch.tensor(0.93151), eta) * math.sqrt(1.0 - 0.93151)
 check("(f'') sigma=1 first step: precise std finite, > 0, == first-order fallback", bool(torch.isfinite(s_first)) and float(s_first) > 0 and abs(float(s_first) - float(s_fo)) < 1e-6, f"{float(s_first):.4f} vs {float(s_fo):.4f}")
+from h3rl.core.sde import h3_sde_step
+xs_, vs_ = torch.randn(2, 5), torch.randn(2, 5); sg, sgn = torch.tensor(0.8), torch.tensor(0.6)
+_, _, m_fo, _ = h3_sde_step(xs_, vs_, sg, sgn, near, noise_level=eta, precise_std=False)
+_, _, m_pr, _ = h3_sde_step(xs_, vs_, sg, sgn, near, noise_level=eta, precise_std=True)
+var_fo = std_dev_t_for_sigma(sg, near, eta) ** 2 * (sg - sgn); var_pr = precise_step_std(sg, sgn, near, eta) ** 2
+eq7 = lambda var: xs_ + vs_ * (sg - sgn) + var / 2 * (-xs_ + (1 - sg) * vs_) / sg            # x + v dt + (var/2) score
+check("(f3) SDE mean = x + v dt + (var/2) score with the noise's own variance (first-order and SAGE Eq. 7)",
+      torch.allclose(m_fo, eq7(var_fo), atol=1e-5) and torch.allclose(m_pr, eq7(var_pr), atol=1e-5))
 eq = GradNormEqualizer(4); check("(g) equalizer returns 1.0 without data", eq.scale(0) == 1.0)
 for t, nrm in ((0, 1.0), (1, 1.0), (2, 2.0), (3, 1.0)): eq.update(t, nrm)
 check("(g') 2x-median timestep scaled by ~0.5", abs(eq.scale(2) - 0.5) < 1e-3 and abs(eq.scale(0) - 1.0) < 1e-3, f"{eq.scale(2):.3f}, {eq.scale(0):.3f}")

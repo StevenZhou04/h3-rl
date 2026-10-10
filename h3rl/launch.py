@@ -10,7 +10,7 @@ sends them to h3rl.rewards.service on dedicated reward nodes instead.
 Nothing here is algorithm-specific: the algorithm's config section is passed to it unchanged.
 """
 from __future__ import annotations
-import json, math, os, subprocess, sys, threading, time
+import json, math, os, re, shutil, signal, subprocess, sys, threading, time
 from pathlib import Path
 from omegaconf import OmegaConf
 from h3rl import paths
@@ -18,6 +18,7 @@ from h3rl.algos import ALGORITHMS
 from h3rl.rewards.combine import make_combiner
 from h3rl.rewards.registry import workers_for
 from h3rl.rewards.procs import Workers, env_with_repo
+from h3rl.data.pool import encodings_needed
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -29,6 +30,8 @@ def load_config(path: str, overrides: list[str]) -> dict:
         if isinstance(src, str):
             cfg[part] = OmegaConf.load(REPO / src)
             if part in over and isinstance(over[part], str): over.pop(part)
+    for src in (cfg, over):                              # experiment-specific algorithm settings on top of the algo file
+        if "algo_overrides" in src: cfg["algo"] = OmegaConf.merge(cfg["algo"], src.pop("algo_overrides"))
     c = OmegaConf.to_container(OmegaConf.merge(cfg, over), resolve=True)
     if c["algo"]["name"] not in ALGORITHMS: raise SystemExit(f"unknown algorithm {c['algo']['name']!r}; known: {sorted(ALGORITHMS)}")
     c["data"]["pool"] = str((REPO / c["data"]["pool"]).resolve()) if not os.path.isabs(c["data"]["pool"]) else c["data"]["pool"]
@@ -37,13 +40,17 @@ def load_config(path: str, overrides: list[str]) -> dict:
 
 def encode_missing(c: dict, out: Path, gpus):
     pool = [json.loads(l) for l in open(c["data"]["pool"])]; tc = Path(paths.CACHE) / "text_cache"; tc.mkdir(parents=True, exist_ok=True)
-    miss = [r for r in pool if not (tc / f"{r['pid']}.pt").exists()]
+    miss = [r for r in encodings_needed(c, pool) if not (tc / f"{r['_key']}.pt").exists()]
     if not miss: return
     print(f"encoding {len(miss)} prompts on GPUs {gpus}", flush=True)
     f = out / "to_encode.jsonl"; f.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in miss))
     procs = [subprocess.Popen([sys.executable, "-m", "h3rl.data.encode", "--pool", str(f), "--out", str(tc), "--shard", f"{i}/{len(gpus)}"],
                               env=env_with_repo(CUDA_VISIBLE_DEVICES=str(g)), cwd=REPO) for i, g in enumerate(gpus)]
-    if any([p.wait() for p in procs]): raise RuntimeError("prompt encoding failed")   # list: wait for every shard, not just up to the first failure
+    try: rcs = [p.wait() for p in procs]                       # every shard, not just up to the first failure
+    finally:
+        for p in procs:
+            if p.poll() is None: p.kill()                          # interrupted (SIGTERM, Ctrl-C): no orphaned encoders
+    if any(rcs): raise RuntimeError("prompt encoding failed")
 
 
 EFA_ENV = {   # NCCL over AWS EFA through the aws-ofi-nccl plugin shipped on AWS GPU images (run.efa: true)
@@ -52,18 +59,33 @@ EFA_ENV = {   # NCCL over AWS EFA through the aws-ofi-nccl plugin shipped on AWS
 }
 
 
+def exit_on_signal(signum, _frame):
+    """SIGTERM / SIGHUP -> SystemExit, so `finally` blocks stop reward workers and encoders instead of orphaning them."""
+    raise SystemExit(128 + signum)
+
+
 def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke: bool = False) -> tuple[int, int]:
     r = c["run"]; gpus = r["train_gpus"]; out.mkdir(parents=True, exist_ok=True)
     net = dict(EFA_ENV) if r.get("efa") else {}
     (out / "config.json").write_text(json.dumps(c, indent=1, ensure_ascii=False))
     names = [] if r.get("reward_service") else workers_for(make_combiner(c["reward"]).terms())   # remote service: no local workers
     workers = Workers(names, out / "queue", r.get("reward_gpus") or [0]) if names else None; peak = [0]; stop = threading.Event()
+    proc = [None]; died = []
     def watch():
         while not stop.is_set():
             q = subprocess.run(["nvidia-smi", "-i", ",".join(map(str, gpus)), "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
-            for line in q.split(): peak[0] = max(peak[0], int(line))
+            for line in q.split():
+                if line.strip().isdigit(): peak[0] = max(peak[0], int(line))
+            dead = [n for n, p in zip(workers.names, workers.procs) if p.poll() is not None] if workers else []
+            if dead and proc[0] is not None and proc[0].poll() is None:
+                # a dead reward worker leaves its requests unanswered for the rest of the run. Stop this node's training now; the
+                # other nodes fail when NCCL sees the lost peer (at the latest at the process-group timeout). Resume by hand from
+                # the last checkpoint (run.resume).
+                died.extend(dead); print(f"reward workers exited mid-run: {dead} (see {out}/queue/logs); stopping training", flush=True)
+                proc[0].terminate()
             stop.wait(20)
     threading.Thread(target=watch, daemon=True).start()
+    old = {sg: signal.signal(sg, exit_on_signal) for sg in (signal.SIGTERM, signal.SIGHUP)}   # workers live in their own sessions
     try:
         if workers: workers.wait_loaded()
         nodes = ["--nnodes", str(r.get("nnodes", 1)), "--node_rank", str(r.get("node_rank", 0)), "--master_addr", r["master_addr"]] if int(r.get("nnodes", 1)) > 1 else []
@@ -72,11 +94,19 @@ def train(c: dict, out: Path, iters: int, save_every: int, log_path: Path, smoke
         if r.get("resume"): cmd += ["--resume", r["resume"]] + (["--start_iter", str(r["start_iter"])] if r.get("start_iter") is not None else [])
         if smoke: cmd += ["--smoke"]
         with open(log_path, "a") as lf:
-            rc = subprocess.call(cmd, env=env_with_repo(CUDA_VISIBLE_DEVICES=",".join(map(str, gpus)), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", **net),
-                                 stdout=lf, stderr=subprocess.STDOUT, cwd=REPO)
+            proc[0] = subprocess.Popen(cmd, env=env_with_repo(CUDA_VISIBLE_DEVICES=",".join(map(str, gpus)), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", **net),
+                                       stdout=lf, stderr=subprocess.STDOUT, cwd=REPO)
+            rc = proc[0].wait()
+        if died and rc == 0: rc = 1
     finally:
+        for sg in old: signal.signal(sg, signal.SIG_IGN)           # a second SIGTERM must not interrupt the cleanup below
         stop.set()
+        if proc[0] is not None and proc[0].poll() is None:
+            proc[0].terminate()
+            try: proc[0].wait(60)
+            except subprocess.TimeoutExpired: proc[0].kill()
         if workers: workers.stop()
+        for sg, h in old.items(): signal.signal(sg, h)
     return rc, peak[0]
 
 
@@ -98,13 +128,23 @@ def smoke_check(out: Path, c: dict, peak: int) -> tuple[bool, str]:
 
 def main():
     if len(sys.argv) < 2: sys.exit(__doc__)
+    for sg in (signal.SIGTERM, signal.SIGHUP): signal.signal(sg, exit_on_signal)
     c = load_config(sys.argv[1], sys.argv[2:]); out = Path(c["run"]["out"]).expanduser()
     if not out.is_absolute(): out = REPO / out
     rank = int(c["run"].get("node_rank", 0))
     if int(c["run"].get("nnodes", 1)) > 1 and rank > 0: out = out / f"node{rank}"   # own queue, logs and rollouts when run.out is on shared storage
     out.mkdir(parents=True, exist_ok=True); (out / "config.resolved.yaml").write_text(OmegaConf.to_yaml(OmegaConf.create(c)))
     encode_missing(c, out, c["run"]["train_gpus"])
+    if not c["run"].get("resume"):                # a fresh run: move an earlier attempt's metrics and checkpoints aside, or pruning
+        old = [f for f in out.iterdir() if f.name == "metrics.jsonl" or re.fullmatch(rf"{re.escape(c['algo']['name'])}-\d+\.(safetensors|state\.json|train\.pt)", f.name)]
+        if old:                                    # would keep the old run's (later-numbered) checkpoints and delete the new ones
+            prev = out / f"previous-{time.strftime('%Y%m%d-%H%M%S')}"; prev.mkdir()
+            for f in old: f.rename(prev / f.name)
+            print(f"moved {len(old)} files of an earlier run to {prev}", flush=True)
+        if (out / "queue").exists():               # unanswered requests of an earlier run would be scored first, eating the reward budget
+            (out / "queue").rename(out / f"queue.previous-{time.strftime('%Y%m%d-%H%M%S')}")
     if c["run"].get("smoke", True) and not c["run"].get("resume"):
+        shutil.rmtree(out / "smoke", ignore_errors=True)                     # the smoke verdict counts metrics rows: start empty
         rc, peak = train(c, out / "smoke", 2, 100, out / "smoke" / "train.log", smoke=True)
         if rank == 0: ok, msg = smoke_check(out / "smoke", c, peak)    # metrics live on the head node
         else:

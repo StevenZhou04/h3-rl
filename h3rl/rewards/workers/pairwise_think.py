@@ -78,13 +78,17 @@ PROMPT = '''You are an objective and precise evaluator for video quality compari
         '''
 
 
-def frames(path, n=8, maxpix=448 * 448):
+def frames(path, n=8):
+    """n uniformly spaced frames at native resolution, as the repo's qwen3_infer_cot_video_generation.py; raises if any
+    frame cannot be read (the prompt's "first half = Video 1" split must match the images)."""
     cap = cv2.VideoCapture(path); N = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); out = []
-    for i in np.linspace(0, max(N - 1, 0), n).astype(int):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i)); ok, f = cap.read()
-        if not ok: continue
-        im = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)); w, h = im.size; s = (maxpix / (w * h)) ** 0.5
-        out.append(im.resize((max(28, int(w * s) // 28 * 28), max(28, int(h * s) // 28 * 28))) if s < 1 else im)
+    if N <= 0: cap.release(); raise ValueError(f"video has no frames: {path}")
+    for i in np.linspace(0, N - 1, n).astype(int):
+        for j in range(int(i), max(int(i) - 4, -1), -1):          # the container's frame count can overcount by a frame or two
+            cap.set(cv2.CAP_PROP_POS_FRAMES, j); ok, f = cap.read()
+            if ok: break
+        if not ok: cap.release(); raise ValueError(f"failed reading frame {i} of {path}")
+        out.append(Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)))
     cap.release(); return out
 
 

@@ -65,6 +65,7 @@ An experiment file names an algorithm config and a reward config and sets data a
 
 ```yaml
 algo: configs/algo/nft.yaml            # or sage_grpo.yaml, flow_grpo.yaml
+algo_overrides: {lr: 5.0e-5}           # optional: change algorithm settings for this experiment only
 reward: configs/reward/mix_v1.yaml
 model:
   hyperflow: ""                        # "" = base model; "default" or a path = 8-step HyperFlow-distilled model
@@ -79,6 +80,7 @@ run:
   iters: 30
   save_every: 5
   keep_recent: 3                       # older checkpoints are deleted, except every keep_every-th (default 50); 0 keeps all
+  reward_timeout_s: 1800               # per iteration: missing rewards after this give that rollout no reward signal (KL only)
   train_gpus: [0, 1, 2]                # one rank per GPU
   reward_gpus: [3]                     # reward workers are spread over these
   port: 29761
@@ -114,11 +116,17 @@ orders (`configs/reward/pairwise_think.yaml`). The launcher starts exactly the w
 
 ### Distilled (HyperFlow) model
 
-With `model.hyperflow` set, the sampler uses HyperFlow's own 8-step sigma grid (read from the LoRA file), NFT draws its
-training noise levels from that grid, and rollouts are about 4x cheaper than on the base model. Two cautions: RL or SFT
-directly on a step-distilled model can erode its few-step sharpness (the plain flow-matching target is the blurry
-posterior mean), so compare frame quality across checkpoints; and the conversion drops HyperFlow's
-`endpoint_time_embedder`, which musubi's H3 lacks, so validate first-frame (`fl2va`) prompts before relying on them.
+With `model.hyperflow` set, the sampler uses HyperFlow's own 8-step sigma grid (read from the LoRA file), shifted per
+modality as the official pipeline does (video shift 12, audio shift 3), with HyperFlow's two-time conditioning: each
+step also embeds its endpoint (the next grid sigma) through the adapter's `endpoint_time_embedder`. NFT draws its training
+noise levels around that grid and keeps each draw's endpoint at the next grid sigma. Rollouts are about 4x cheaper than
+on the base model. Caution: RL or SFT directly on a step-distilled model can erode its few-step sharpness (the plain
+flow-matching target is the blurry posterior mean), so compare frame quality across checkpoints. Runs before 2026-10-10
+sampled HyperFlow on the unshifted grid and are not comparable.
+
+Reward details: each term is z-scored over a running window (`z_window_iters: 16` iterations, kept per clip length,
+the same on every rank) before weighting. A rollout with any black frame (mean luma < 10) or luma strobing on more than
+5% of frame transitions counts as broken and ranks last in its group; watch `worst_frac` on prompts that fade to black.
 
 ## Prompts
 
@@ -131,7 +139,7 @@ A prompt pool is JSONL, one prompt per line:
 ```
 
 `task` is `t2va` (text to video+audio) or `fl2va` (first frame to video+audio; `image` is the frame path).
-`prompts/example_pool.jsonl` has 200 text-to-video prompts for 5 s clips and 130 multi-shot, timecoded prompts for
+`prompts/example_pool.jsonl` has 200 text-to-video prompts for 5 s clips and 92 multi-shot, timecoded prompts for
 10 s clips (`prompts/complexshot_SPEC.md` describes their format; 20 more are held out in `complexshot_heldout.jsonl`).
 
 ## Extending

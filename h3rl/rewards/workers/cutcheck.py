@@ -25,6 +25,7 @@ def clip_cuts(path: str) -> int:
         f = cv2.resize(f, (240, 136)); g.append(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32))
         x = cv2.calcHist([cv2.cvtColor(f, cv2.COLOR_BGR2HSV)], [0, 1, 2], None, [16, 8, 8], [0, 180, 0, 256, 0, 256])
         cv2.normalize(x, x); h.append(x)
+    if len(g) < 9: raise ValueError(f"{path}: {len(g)} frames decoded, need at least 9")   # unreadable is an error, not cut-free
     d = np.array([np.abs(g[i + 1] - g[i]).mean() / 255 for i in range(len(g) - 1)])
     c = np.array([cv2.compareHist(h[i], h[i + 1], cv2.HISTCMP_CORREL) for i in range(len(h) - 1)])
     n = 0
@@ -42,9 +43,11 @@ class CutCheckWorker(Worker):
         self.pool = ProcessPoolExecutor(int(os.environ.get("CUT_PROCS", "8")))
 
     def score(self, requests):
-        cuts = list(self.pool.map(clip_cuts, [r["mp4"] for r in requests]))
+        futs = [self.pool.submit(clip_cuts, r["mp4"]) for r in requests]
         out = []
-        for r, n in zip(requests, cuts):
+        for r, fu in zip(requests, futs):
+            try: n = fu.result()
+            except Exception as e: out.append({"key": r["key"], "scores": {}, "error": f"{type(e).__name__}: {e}"}); continue
             cont = bool(CONTINUOUS.search(r.get("prompt") or ""))
             out.append({"key": r["key"], "scores": {"cut_free": -float(min(n, 3)) if cont else 0.0, "n_cuts": float(n), "cut_continuous_prompt": float(cont)}})
         return out

@@ -8,17 +8,20 @@ TMP_ROOT = f"{H3_ROOT}/worker_tmp"   # under H3RL_CACHE, not /tmp: frame dumps c
 from h3rl.rewards.queue import pending_requests, write_results
 
 
-def sample_frames(mp4: str, n: int, out_dir: str, short_side: int = 448) -> list[str]:
-    """n uniformly spaced JPEG frames (ffmpeg), returns paths. Cheap and venv-independent."""
+def sample_frames(mp4: str, n: int, out_dir: str, short_side: int | None = 448) -> list[str]:
+    """n uniformly spaced JPEG frames (ffmpeg), returns paths; short_side=None keeps the native resolution. Raises if
+    the duration cannot be read or any frame fails to extract (a worker error, never a judgment on fewer frames)."""
     os.makedirs(out_dir, exist_ok=True)
-    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", mp4],
-                               capture_output=True, text=True).stdout.strip() or 5.0)
+    pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", mp4], capture_output=True, text=True)
+    try: dur = float(pr.stdout.strip())
+    except ValueError: raise RuntimeError(f"ffprobe could not read the duration of {mp4}: {pr.stderr.strip()[:200]}")
     paths = []
     for k in range(n):
         t = (k + 0.5) / n * dur; p = f"{out_dir}/f{k:02d}.jpg"
         subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-ss", f"{t:.3f}", "-i", mp4, "-frames:v", "1",
-                        "-vf", f"scale=-2:{short_side}", "-q:v", "2", p], check=False, stdin=subprocess.DEVNULL)
-        if os.path.exists(p): paths.append(p)
+                        *(["-vf", f"scale=-2:{short_side}"] if short_side else []), "-q:v", "2", p], check=False, stdin=subprocess.DEVNULL)
+        if not os.path.exists(p): raise RuntimeError(f"frame {k} at {t:.2f}s of {mp4} could not be extracted")
+        paths.append(p)
     return paths
 
 

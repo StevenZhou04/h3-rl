@@ -85,12 +85,15 @@ def main():
     ap.add_argument("--workers", nargs="*", default=None, help="override the worker list (default: from the reward config)")
     a = ap.parse_args(); root = Path(a.root); (root / "queue").mkdir(parents=True, exist_ok=True)
     names = a.workers if a.workers is not None else workers_for(make_combiner(OmegaConf.to_container(OmegaConf.load(a.reward))).terms())
-    w = Workers(names, root / "queue", a.gpus, a.replicas) if names else None
-    if w: w.wait_loaded()
-    threading.Thread(target=janitor, args=(root, a.keep_s), daemon=True).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(root))
-    print(f"reward service on :{a.port} | workers {names} x{a.replicas} on GPUs {a.gpus} | root {root}", flush=True)
-    try: srv.serve_forever()
+    import signal; signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(143)))   # kill: still stop the workers
+    w = None
+    try:
+        w = Workers(names, root / "queue", a.gpus, a.replicas) if names else None
+        if w: w.wait_loaded()
+        threading.Thread(target=janitor, args=(root, a.keep_s), daemon=True).start()
+        srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(root))
+        print(f"reward service on :{a.port} | workers {names} x{a.replicas} on GPUs {a.gpus} | root {root}", flush=True)
+        srv.serve_forever()
     finally:
         if w: w.stop()
 

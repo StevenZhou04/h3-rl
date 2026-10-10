@@ -12,11 +12,10 @@ def dist_setup(device_arg: str):
         return 0, 1, torch.device(device_arg)
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     torch.cuda.set_device(local_rank)
-    # Ranks reach the gradient all-reduce at different times: rollout length varies with prompt
-    # length and the judge's network latency, so skew of several minutes is normal. The default
-    # NCCL collective timeout would abort a healthy run; one hour is longer than any plausible
-    # single step (~20 min measured) and still bounded.
-    dist.init_process_group(backend="nccl", timeout=timedelta(hours=1))
+    # Ranks reach the collectives at different times: rollout length varies with prompt length, and a rank can wait up
+    # to run.reward_timeout_s (default 30 min) for missing rewards before it proceeds with advantage 0. The timeout
+    # must exceed that plus a rollout (~20 min measured), or one slow reward worker aborts the whole job.
+    dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
     return dist.get_rank(), world_size, torch.device(f"cuda:{local_rank}")
 
 
@@ -82,3 +81,26 @@ def prune_checkpoints(out_dir: Path, name: str, keep_recent: int, keep_every: in
         for ext in (".safetensors", ".state.json", ".train.pt"):
             try: (Path(out_dir) / f"{name}-{step:05d}{ext}").unlink()
             except FileNotFoundError: pass
+
+
+def broadcast_tree(obj, rank: int, device: torch.device):
+    """Rank 0's `obj` (nested dicts/lists/tuples holding tensors) on every rank, tensors on the CPU. The structure goes as
+    a small pickle; each tensor goes through its own NCCL broadcast, so a multi-GB optimizer state never becomes one
+    pickled byte tensor on every GPU."""
+    tensors = []
+    def strip(x):
+        if isinstance(x, torch.Tensor): tensors.append(x); return ("__tensor__", tuple(x.shape), str(x.dtype).replace("torch.", ""))
+        if isinstance(x, dict): return {k: strip(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)): return type(x)(strip(v) for v in x)
+        return x
+    box = [strip(obj) if rank == 0 else None]; dist.broadcast_object_list(box, src=0); skel = box[0]
+    it = iter(tensors)
+    def fill(x):
+        if isinstance(x, tuple) and len(x) == 3 and x[0] == "__tensor__":
+            t = next(it).to(device) if rank == 0 else torch.empty(x[1], dtype=getattr(torch, x[2]), device=device)
+            dist.broadcast(t, src=0); return t.cpu()
+        if isinstance(x, dict): return {k: fill(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)): return type(x)(fill(v) for v in x)
+        return x
+    out = fill(skel); torch.cuda.empty_cache(); return out
+

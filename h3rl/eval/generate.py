@@ -16,7 +16,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--eval_set", nargs="+", required=True, help="jsonl files with eid/prompt/task/image")
 ap.add_argument("--out", required=True)
 ap.add_argument("--dit", default=DIT_BF16)
-ap.add_argument("--hyperflow", default=HYPERFLOW or (HYPERFLOW_DEFAULT if os.path.exists(HYPERFLOW_DEFAULT) else ""), help="'' for the base model")
+ap.add_argument("--hyperflow", default="auto", help="'' for the base model; 'default' or a path for HyperFlow; auto: HyperFlow if converted, "
+               "but with --adapters you must choose (a LoRA trained on the base model must not get HyperFlow added)")
 ap.add_argument("--adapters", nargs="*", default=[], help="extra LoRA safetensors (e.g. the SFT LoRA), attached after HyperFlow")
 ap.add_argument("--steps", type=int, default=None, help="default: 8 with HyperFlow, 30 on the base model")
 ap.add_argument("--frames", type=int, default=124, help="clip length for prompts without min_frames (17n+5 at 24 fps)")
@@ -25,8 +26,19 @@ ap.add_argument("--text_cache", default=f"{H3_ROOT}/eval_text_cache.pt")
 ap.add_argument("--text_encoder", default=TEXT_ENCODER)
 ap.add_argument("--limit", type=int, default=0)
 ap.add_argument("--seed_mode", choices=["shared", "prompt"], default="shared", help="shared: one noise per seed index for every prompt (legacy); prompt: independent noise per prompt")
-ap.add_argument("--size", type=int, nargs=2, default=[544, 960], metavar=("H", "W"), help="eval canvas; RL used 320 512")
+ap.add_argument("--size", type=int, nargs=2, default=[544, 960], metavar=("H", "W"), help="eval canvas (default for every length)")
+ap.add_argument("--frame_sizes", nargs="*", default=["243:480x832"], help="per-length canvas FRAMES:HxW, as the experiments' data.frame_sizes")
 a = ap.parse_args()
+if a.hyperflow == "auto":
+    if a.adapters: sys.exit("--adapters given: pass --hyperflow default (the LoRA was trained on HyperFlow) or --hyperflow '' (base model)")
+    a.hyperflow = HYPERFLOW or (HYPERFLOW_DEFAULT if os.path.exists(HYPERFLOW_DEFAULT) else "")
+elif a.hyperflow == "default": a.hyperflow = HYPERFLOW_DEFAULT
+if a.hyperflow and not os.path.exists(a.hyperflow): sys.exit(f"HyperFlow LoRA not found: {a.hyperflow} (scripts/download_weights.py --hyperflow)")
+if a.hyperflow:
+    from h3rl.core.hyperflow import is_current
+    if not is_current(a.hyperflow): sys.exit(f"{a.hyperflow} is from an older, incorrect conversion; rerun scripts/download_weights.py --hyperflow")
+FS = {int(k): tuple(int(x) for x in v.split("x")) for k, v in (x.split(":") for x in a.frame_sizes)}
+def canvas(r): return FS.get(int(r.get("min_frames") or a.frames), tuple(a.size))   # (H, W) for this row's clip length
 CK = H3_CKPTS; os.makedirs(a.out, exist_ok=True); device = torch.device("cuda:0")
 if a.steps is None: a.steps = 8 if a.hyperflow else 30
 cfg = GRPOConfig(infer_steps=a.steps, width=a.size[1], height=a.size[0], frame_count=a.frames)
@@ -38,17 +50,20 @@ print(f"{len(rows)} prompts x {len(a.seeds)} seeds; {len(todo)} to generate", fl
 if not todo: sys.exit(0)
 
 # --- text encodings: cache hits + one pass of the text encoder for the rest
+from h3rl.data.pool import text_key
+tkey = lambda r: text_key(dict(r, pid=r["eid"]), *canvas(r))   # task + prompt (+ image and canvas for fl2va), not the prompt alone
 tc = torch.load(a.text_cache, map_location="cpu", weights_only=False) if os.path.exists(a.text_cache) else {}; tc.pop("__tasks__", None)
-missing = [r for r in rows if r["prompt"] not in tc]
+missing = [r for r in rows if tkey(r) not in tc]
 if missing:
     from musubi_tuner.minimax_h3.text_encoder import load_h3_processor, load_h3_text_encoder
     print(f"encoding {len(missing)} prompts with the text encoder", flush=True)
     proc, te = load_h3_processor(), load_h3_text_encoder(a.text_encoder, device=device, dtype=torch.bfloat16)
     for r in missing:
-        fr = load_image_frames(r["image"], width=cfg.width, height=cfg.height) if r["task"] == "fl2va" else None
+        H, W = canvas(r); fr = load_image_frames(r["image"], width=W, height=H) if r["task"] == "fl2va" else None
         h, t = encode_prompt(r["prompt"], proc, te, device, task=r["task"], condition_frames=fr)
-        tc[r["prompt"]] = (h.cpu(), t.cpu())
+        tc[tkey(r)] = (h.cpu(), t.cpu())
     del te; torch.cuda.empty_cache()
+    tmp = f"{a.text_cache}.{os.getpid()}.tmp"; torch.save(tc, tmp); os.replace(tmp, a.text_cache)
 
 hyper = read_hyperflow_metadata(a.hyperflow) if a.hyperflow else None
 base_loras = ([a.hyperflow] if a.hyperflow else []) + list(a.adapters)
@@ -75,7 +90,8 @@ ctx_cache = {}
 for n, (r, seed) in enumerate(todo):
     key = f"{r['eid']}_s{seed}"
     if r["eid"] not in ctx_cache:
-        h, t = tc[r["prompt"]]; latent = geometry = cond_px = None; cfg.frame_count = int(r.get("min_frames") or a.frames)
+        h, t = tc[tkey(r)]; latent = geometry = cond_px = None; cfg.frame_count = int(r.get("min_frames") or a.frames)
+        cfg.height, cfg.width = canvas(r)                              # same canvas as training for this length
         if r["task"] == "fl2va":
             frames = load_image_frames(r["image"], width=cfg.width, height=cfg.height)
             latent, geometry = encode_condition_latent(frames, models["video_vae"], device); cond_px = np.asarray(frames[0])
@@ -85,9 +101,10 @@ for n, (r, seed) in enumerate(todo):
     import zlib
     eff = seed if a.seed_mode == "shared" else (seed * 1000003 + zlib.crc32(r["eid"].encode())) % (2**31)
     gen = torch.Generator(device="cpu").manual_seed(eff)
-    vis_cond, aud_cond = augment_condition_latents(ctx["raw_visual_conditions"], ctx["audio_condition_latents"], generator=gen, visual_clean=ctx["visual_condition_clean"], device=device)
     video, audio = initialize_target_latents(video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
-                                             audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames), generator=gen, device=device)
+                                             audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames), generator=gen, device=device,
+                                             video_dtype=torch.float32, audio_dtype=torch.float32)   # as sample_joint_av_latents: fp32, noise first
+    vis_cond, aud_cond = augment_condition_latents(ctx["raw_visual_conditions"], ctx["audio_condition_latents"], generator=gen, visual_clean=ctx["visual_condition_clean"], device=device)
     ts = time.time()
     with torch.no_grad():
         for k in range(cfg.infer_steps):
@@ -97,7 +114,6 @@ for n, (r, seed) in enumerate(todo):
                                audio_condition_latents=aud_cond, visual_condition_clean=ctx["visual_condition_clean"])
             video, _, _, _ = h3_sde_step(video, pred.video, sv, svn, schedule.video[1], noise_level=0.0)
             audio, _, _, _ = h3_sde_step(audio, pred.audio, sa, san, schedule.audio[1], noise_level=0.0)
-            video, audio = video.to(torch.bfloat16), audio.to(torch.bfloat16)
         vid = decode_rollout_to_video(video, audio, models)
     m = compute_video_metrics(vid)
     write_mp4(vid, f"{a.out}/{key}.mp4")
@@ -106,5 +122,5 @@ for n, (r, seed) in enumerate(todo):
                **{k: round(float(v), 4) for k, v in m.items()})
     man.write(json.dumps(rec) + "\n"); man.flush()
     if n % 10 == 0: print(f"{n+1}/{len(todo)} {key} {rec['gen_s']}s", flush=True)
-json.dump(dict(size=a.size, dit=a.dit, hyperflow=a.hyperflow, adapters=a.adapters, steps=a.steps, seeds=a.seeds, sigmas=[float(x) for x in schedule.video]), open(f"{a.out}/config.json", "w"), indent=1)
+json.dump(dict(size=a.size, frame_sizes=a.frame_sizes, dit=a.dit, hyperflow=a.hyperflow, adapters=a.adapters, steps=a.steps, seeds=a.seeds, sigmas=[float(x) for x in schedule.video]), open(f"{a.out}/config.json", "w"), indent=1)
 print("DONE", flush=True)

@@ -62,13 +62,11 @@ def read_hyperflow_metadata(path: str) -> dict:
     header, and the model card is explicit that the step count and sigma grid come from the
     weights file -- passing a different count is an error. So we read them rather than assume.
 
-    Its grid is NOT H3's shift formula: build_shifted_schedule(8, video_shift=12) gives
-    [1.0, .988, .973, .952, .923, .878, .800, .632, 0] -- seven of eight steps above 0.8 and then a
-    cliff -- while HyperFlow ships a symmetric, evenly spread
-    [1.0, .932, .839, .704, .500, .297, .161, .068, 0]. That difference matters for RL beyond
-    sample quality: our SDE exploration noise scales as sqrt(sigma/(1-sigma)), which is ~9.9 at
-    sigma=0.99 and ~1.0 at sigma=0.5, so the stock grid injects enormous noise at nearly every
-    step while this grid stays well conditioned throughout.
+    The stored grid is HyperFlow's RAW sigma grid [1.0, .932, .839, .704, .5, .297, .161, .068, 0]. Like H3's own
+    linspace base, each modality shifts it with its scheduler shift (video 12, audio 3, also recorded in the header)
+    before sampling: the official pipeline does shift_sigmas(grid, shift) per modality (hyperflow_h3/blocks.py,
+    HyperFlowSetTimestepsStep) and takes the two-time endpoints from the shifted grids. Video therefore samples at
+    [1, .994, .984, .966, .923, .835, .697, .469, 0]. (Before 2026-10-10 we used the raw grid unshifted for video.)
     """
     from safetensors import safe_open
 
@@ -127,13 +125,10 @@ def make_schedule(cfg: GRPOConfig, device: torch.device, hyperflow: dict | None 
         raise ValueError(
             f"HyperFlow fixes the step count at {hyperflow['steps']} (its sigma grid is stored in the "
             f"weights); --infer_steps {cfg.infer_steps} would sample off that grid")
-    video = torch.tensor(hyperflow["sigmas"], dtype=torch.float64, device=device)
-    # Audio keeps H3's own shifted schedule at the audio shift recorded in the adapter: the file
-    # ships ONE sigma grid and separately records audio_shift=3.0, which is H3's stock default,
-    # so the adapter appears to retime the video branch only. Audio is not judged by our reward,
-    # so an error here costs little -- but it is an assumption, not a documented fact.
-    base = torch.linspace(1.0, 0.0, hyperflow["steps"] + 1, dtype=torch.float64, device=device)
-    return H3SigmaSchedule(base=base, video=video, audio=shift_sigma(base, hyperflow["audio_shift"]))
+    # The adapter's raw grid plays the role of H3's linspace base: each modality shifts it with its own shift, exactly as
+    # the official HyperFlow pipeline does (shift_sigmas(grid, video_shift / audio_shift) in HyperFlowSetTimestepsStep).
+    base = torch.tensor(hyperflow["sigmas"], dtype=torch.float64, device=device)
+    return H3SigmaSchedule(base=base, video=shift_sigma(base, hyperflow["video_shift"]), audio=shift_sigma(base, hyperflow["audio_shift"]))
 
 
 def load_h3_for_rl(*, dit_path: str, text_encoder_path: str, video_vae_path: str, audio_vae_path: str,
@@ -379,7 +374,7 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
         shared_latents = initialize_target_latents(
             video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
             audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames),
-            generator=_seeded_cpu_generator(), device=device,
+            generator=_seeded_cpu_generator(), device=device, video_dtype=torch.float32, audio_dtype=torch.float32,
         )
 
     trajectories = []
@@ -401,7 +396,7 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
                 video_shape=(1, VIDEO_CHANNELS, layout.target_video.frames, layout.target_video.height, layout.target_video.width),
                 audio_shape=(1, AUDIO_CHANNELS, STEREO_CHANNELS, layout.target_audio_frames),
                 generator=_seeded_cpu_generator(),
-                device=device,
+                device=device, video_dtype=torch.float32, audio_dtype=torch.float32,   # fp32 like the official sampler
             )
         steps_record = []
         with torch.no_grad():
@@ -441,16 +436,18 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
                 mean_v_ref = mean_a_ref = None
                 if cfg.kl_beta > 0 and not is_last:
                     network.set_multiplier(0.0)  # reference pass: same transformer, LoRA contribution zeroed
-                    pred_ref = transformer(
-                        video_latents=video, audio_latents=audio,
-                        text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
-                        layout=layout, model_t_video=1.0 - sigma_v, model_t_audio=1.0 - sigma_a,
-                        visual_condition_latents=vis_cond, audio_condition_latents=aud_cond,
-                        visual_condition_clean=ctx["visual_condition_clean"],
-                    )
+                    try:
+                        pred_ref = transformer(
+                            video_latents=video, audio_latents=audio,
+                            text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
+                            layout=layout, model_t_video=1.0 - sigma_v, model_t_audio=1.0 - sigma_a,
+                            visual_condition_latents=vis_cond, audio_condition_latents=aud_cond,
+                            visual_condition_clean=ctx["visual_condition_clean"],
+                        )
+                    finally:
+                        network.set_multiplier(1.0)
                     _, _, mean_v_ref, _ = h3_sde_step(video, pred_ref.video, sigma_v, sigma_v_next, sigma_max_v, noise_level=step_noise, prev_sample=next_video, precise_std=cfg.sde_precise)
                     _, _, mean_a_ref, _ = h3_sde_step(audio, pred_ref.audio, sigma_a, sigma_a_next, sigma_max_a, noise_level=step_noise, prev_sample=next_audio, precise_std=cfg.sde_precise)
-                    network.set_multiplier(1.0)
                 # SAGE-GRPO dual trust region: reference means under the periodic LoRA snapshot (position) and the
                 # previous step's LoRA (velocity). trust_refs = {"pos": [tensors], "vel": [tensors]} or None.
                 tr_means = {}
@@ -460,15 +457,17 @@ def rollout_group(transformer, network, *, prompt: str, ctx: dict, cfg: GRPOConf
                         if ref is None: continue
                         backup = [q.data.clone() for q in live]
                         with torch.no_grad():
-                            for q, o in zip(live, ref): q.data.copy_(o)
-                            pred_tr = transformer(
-                                video_latents=video, audio_latents=audio,
-                                text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
-                                layout=layout, model_t_video=1.0 - sigma_v, model_t_audio=1.0 - sigma_a,
-                                visual_condition_latents=vis_cond, audio_condition_latents=aud_cond,
-                                visual_condition_clean=ctx["visual_condition_clean"],
-                            )
-                            for q, b in zip(live, backup): q.data.copy_(b)
+                            try:
+                                for q, o in zip(live, ref): q.data.copy_(o)
+                                pred_tr = transformer(
+                                    video_latents=video, audio_latents=audio,
+                                    text_hidden_states=ctx["text_hidden_states"], text_token_tags=ctx["text_token_tags"],
+                                    layout=layout, model_t_video=1.0 - sigma_v, model_t_audio=1.0 - sigma_a,
+                                    visual_condition_latents=vis_cond, audio_condition_latents=aud_cond,
+                                    visual_condition_clean=ctx["visual_condition_clean"],
+                                )
+                            finally:
+                                for q, b in zip(live, backup): q.data.copy_(b)
                         _, _, mv, _ = h3_sde_step(video, pred_tr.video, sigma_v, sigma_v_next, sigma_max_v, noise_level=step_noise, prev_sample=next_video, precise_std=cfg.sde_precise)
                         _, _, ma, _ = h3_sde_step(audio, pred_tr.audio, sigma_a, sigma_a_next, sigma_max_a, noise_level=step_noise, prev_sample=next_audio, precise_std=cfg.sde_precise)
                         tr_means[name] = (mv.cpu(), ma.cpu())
