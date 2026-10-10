@@ -1,7 +1,7 @@
 """Interface between the shared trainer and an RL algorithm.
 
 The trainer owns the model, prompts, clip-length buckets, decoding, rewards, metrics and checkpoints. Per iteration
-and per prompt it calls `rollout(ctx, prompt, seed)`, decodes each returned sample's final latents, scores them, and
+and per prompt it calls `rollout(ctx, prompt, seed, members)`, decodes each returned sample's final latents, scores them, and
 then calls `update(samples)` once with every sample of the iteration (each carrying `R`, the combined reward, `group`,
 its prompt index on this rank, `gid`, the group's id across ranks, and `member`, its index in the group). To add an algorithm: subclass Algorithm, register it, add configs/algo/<name>.yaml.
 """

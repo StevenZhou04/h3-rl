@@ -77,17 +77,18 @@ class NFT(Algorithm):
 
     def _groups(self, samples):
         """{gid: {member: (R video, R audio)}} for this rank's groups, with the members other ranks sampled (ranks_per_group > 1)."""
-        mine = [(s["gid"], s["member"], s["R"]["video"], s["R"]["audio"]) for s in samples]
+        mine = [(s["gid"], s["member"], s["R"]["video"], s["R"]["audio"], (s.get("prompt") or {}).get("pid")) for s in samples]
         if self.ranks_per_group() > 1 and self.T.world > 1:
             import torch.distributed as dist
             parts = [None] * self.T.world; dist.all_gather_object(parts, mine); rows = [x for p in parts for x in p]
         else: rows = mine
-        local = {g for g, _, _, _ in mine}; out = {}
-        for g, k, v, u in rows:
-            if g in local: out.setdefault(g, {})[k] = (v, u)
+        local = {g for g, *_ in mine}; out, pids = {}, {}
+        for g, k, v, u, pid in rows:
+            if g in local: out.setdefault(g, {})[k] = (v, u); pids.setdefault(g, set()).add(pid)
         n = self.cfg.group_size
         for g, m in out.items():
             if sorted(m) != list(range(n)): raise RuntimeError(f"group {g}: members {sorted(m)}, expected 0..{n - 1}")
+            if len(pids[g]) > 1: raise RuntimeError(f"group {g} mixes prompts {sorted(map(str, pids[g]))}: the ranks of a team drew different prompts")
         return out
 
     def _global_sd(self, values):
