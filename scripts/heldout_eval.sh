@@ -6,7 +6,7 @@
 #
 #   bash scripts/heldout_eval.sh runs/heldout 0,1,2,3 runs/nft_hf_mix/nft-00030.safetensors runs/nft_hf_mix/nft-00060.safetensors
 #
-# GPUs: one generation process per GPU (~60 GB each), then the reward workers spread over the same GPUs.
+# GPUs: one generation process per GPU (~110 GB each, so 141 GB+ cards), then the reward workers spread over the same GPUs.
 # Results: <out>/scores_base_<ckpt>.json and the printed tables (also in <out>/report.txt).
 set -euo pipefail
 [ $# -ge 3 ] || { echo "usage: $0 OUT_DIR GPUS(e.g. 0,1,2,3) CKPT.safetensors [CKPT ...]"; exit 1; }
