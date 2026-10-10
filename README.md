@@ -128,6 +128,20 @@ Reward details: each term is z-scored over a running window (`z_window_iters: 16
 the same on every rank) before weighting. A rollout with any black frame (mean luma < 10) or luma strobing on more than
 5% of frame transitions counts as broken and ranks last in its group; watch `worst_frac` on prompts that fade to black.
 
+## Held-out check
+
+```bash
+bash scripts/heldout_eval.sh runs/heldout 0,1,2,3 runs/nft_hf_mix/nft-00030.safetensors runs/nft_hf_mix/nft-00060.safetensors
+```
+
+Generates the 32 prompts of `prompts/heldout_rl.jsonl` (5 s, HyperFlow 8 steps, one fixed noise per prompt) with the
+base model and with each checkpoint, then scores every checkpoint against base with the reward workers, paired by prompt
+(`h3rl/eval/reward_check.py`): per-term means, difference, win rate and a permutation p-value, for the trained terms
+(`va_ta`, `soli_ta`, `hps`, `flow_motion`) and the quality checks (`va_vq`, `va_mq`, `hps_min`, `soli_phys`, flow,
+cuts). HPSv3++ is scored without its RL-progress ramp. Tables go to `<out>/report.txt`, per-video scores to
+`<out>/scores_base_<ckpt>.json`. The prompts are rows of `example_pool.jsonl`, so later in a run they have been trained
+on too; use a fresh output directory per run, since arms are named after the checkpoint file.
+
 ## Prompts
 
 A prompt pool is JSONL, one prompt per line:
@@ -210,7 +224,7 @@ h3rl/rewards/           combine.py (combiners), registry.py, queue.py, worker_ba
 h3rl/data/encode.py     text-encoder cache for a prompt pool
 h3rl/eval/              held-out generation and scoring
 configs/                algo/, reward/, experiments/
-scripts/                setup_env.sh, download_weights.py
+scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh
 envs/                   pinned package versions for the two environments
 tests/                  correctness tests
 ```
