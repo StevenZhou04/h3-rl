@@ -64,8 +64,9 @@ class NFT(Algorithm):
         if n % cfg.grad_accum: gn = self._step()
         ema_update(self.old, T.params, min(cfg.ema_slope * self.n_updates, cfg.ema_max))
         rv = [s["r_video"] for s in samples if s["r_video"] is not None]
-        return dict(loss=float(np.mean([p["loss"] for p in parts])), fm_video=float(np.mean([p["fm_video"] for p in parts])),
-                    r_video_mean=float(np.mean(rv)) if rv else 0.0, grad_norm=gn, n_updates=float(self.n_updates))
+        logged = ("loss", "loss_policy", "loss_kl", "kl_video", "kl_audio", "loss_video", "loss_audio", "fm_video")
+        mean = {k: float(np.mean([p[k] for p in parts if k in p])) for k in logged if any(k in p for p in parts)}
+        return dict(**mean, r_video_mean=float(np.mean(rv)) if rv else 0.0, grad_norm=gn, n_updates=float(self.n_updates))
 
     def _global_sd(self, values):
         """Std of every valid (not missing, not gated) reward of this iteration over all ranks (reference global_std)."""

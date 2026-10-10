@@ -170,7 +170,7 @@ def nft_loss(transformer, network, params: list, old_params: list, sample: dict,
         with hyperflow.endpoints(transformer, ev, ea):
             parts.append(_nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video, r_audio, cfg, device, rng,
                                       loss_scale / len(levels), sv, sa))
-    out = {k: float(np.mean([p[k] for p in parts if k in p])) for k in parts[0]}
+    out = {k: float(np.mean([p[k] for p in parts if k in p])) for k in dict.fromkeys(k for p in parts for k in p)}
     return out
 
 
@@ -222,7 +222,10 @@ def _nft_loss_at(transformer, network, params, old_params, sample, ctx, r_video,
     # the video and audio rows, so a branch without a reward (audio under video-only configs) would otherwise drift freely
     if ref_v is not None: kv = ((vt_v - ref_v) ** 2).mean(); loss = loss + kl_w * kv; parts["kl_video"] = float(kv.detach())
     if ref_a is not None: ka = ((vt_a - ref_a) ** 2).mean(); loss = loss + cfg.audio_loss_weight * kl_w * ka; parts["kl_audio"] = float(ka.detach())
+    kl_term = loss.new_zeros(())
+    if ref_v is not None: kl_term = kl_term + kl_w * kv.detach()
+    if ref_a is not None: kl_term = kl_term + cfg.audio_loss_weight * kl_w * ka.detach()
     if loss.requires_grad: (loss * loss_scale).backward()
-    parts.update(loss=float(loss.detach()), sigma_v=sv, sigma_a=sa, fm_video=float(((vt_v.detach() - tv) ** 2).mean()))
-    del pred, old, vo_v, vo_a, vt_v, vt_a, loss, ref_v, ref_a
+    parts.update(loss_kl=float(kl_term), loss_policy=float(loss.detach() - kl_term), loss=float(loss.detach()), sigma_v=sv, sigma_a=sa, fm_video=float(((vt_v.detach() - tv) ** 2).mean()))
+    del pred, old, vo_v, vo_a, vt_v, vt_a, loss, ref_v, ref_a, kl_term
     return parts

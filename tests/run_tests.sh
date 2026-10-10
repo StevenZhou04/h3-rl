@@ -11,6 +11,7 @@ echo "=== 0d stopping workers ends their child processes ==="; CUDA_VISIBLE_DEVI
 echo "=== 0e checkpoint pruning ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_prune.py
 echo "=== 0f HyperFlow sigma grids and two-time endpoints ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_hyperflow_schedule.py
 echo "=== 0g speed-ups keep results (partial checkpointing, streamed rollouts) ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_speedups.py
+echo "=== 0i NFT loss breakdown (policy vs KL) is logged ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_kl_logging.py
 echo "=== 3/4 DiffusionNFT loss + SAGE-GRPO switches ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_nft_sage.py
 if [ -n "${GPU:-}" ]; then echo "=== 4/4 fast RoPE equals the reference (GPU) ==="; "$PY" tests/test_rope_gpu.py; else echo "=== 4/4 skipped (GPU=1 to run) ==="; fi
 echo "ALL TESTS PASSED"
