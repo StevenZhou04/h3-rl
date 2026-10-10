@@ -18,8 +18,10 @@ from h3rl.core.dist import dist_setup, average_metrics, prune_checkpoints, broad
 from h3rl.rewards.combine import make_combiner, WORST
 from h3rl.rewards.backend import make_backend
 from h3rl.rewards.registry import WORKERS, workers_for
-from h3rl.data.pool import canvas_for, eligible, text_key
+from h3rl.data.pool import canvas_for, draw, eligible, text_key
 
+
+MAX_SMOKE_MEMORY = 0.96             # smoke fails above this share of GPU memory on any rank (no headroom for longer prompts)
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--config", required=True); ap.add_argument("--out", required=True)
@@ -79,7 +81,7 @@ def main():
                 for p, v in zip(params, extra["params"], strict=True): p.copy_(v.to(p.device, p.dtype))
         comb.load(st["combiner"])
         if a.start_iter is None: a.start_iter = int(st["iter"])
-        T.rng = random.Random(int(run.get("seed", 0)) * 1000 + rank + 7919 * a.start_iter)   # do not replay the first iterations' prompts
+        T.rng = random.Random(int(run.get("seed", 0)) * 1000 + rank + 7919 * a.start_iter)   # fresh loss noise after a resume
     a.start_iter = a.start_iter or 0
     if world > 1:                   # every rank starts from rank 0's LoRA (the init is random per process)
         with torch.no_grad():
@@ -95,7 +97,7 @@ def main():
             if world > 1: dist.destroy_process_group()
             raise SystemExit(bad)
     team, sub = rank // RPG, rank % RPG; mine = list(range(sub * G // RPG, (sub + 1) * G // RPG))   # this rank's members of each group
-    prompt_rng = T.rng if RPG == 1 else random.Random(int(run.get("seed", 0)) * 1000 + 500000 + team + 7919 * a.start_iter)
+    n_teams = world // RPG
     if st is not None:
         algo.load(st["algo"])
         if extra is not None: algo.load_tensors(extra["algo"])
@@ -116,7 +118,8 @@ def main():
         if not enough:
             if world > 1: dist.destroy_process_group()
             raise SystemExit(f"rank {rank}: {len(cand)} encoded prompts for {frames} frames, need {algo.prompts_per_step()} (run through h3rl.launch to encode)")
-        prompts = prompt_rng.sample(cand, algo.prompts_per_step()); samples = []   # the RPG ranks of a team draw the same prompts
+        P = algo.prompts_per_step()       # one shuffled walk through the pool shared by all teams: no repeats until it is used up
+        prompts = draw(cand, int(run.get("seed", 0)), frames, (it * n_teams + team) * P, P); samples = []   # a team's ranks: the same prompts
         rtext = lambda s: s["prompt"].get("reward_prompt") or s["prompt"]["prompt"]
         meta = lambda s: {"camera_move": s["prompt"].get("camera_move"), "audio_prompt": s["prompt"].get("audio_prompt"), "rl_progress": it / max(a.iters, 1)}
         for j, pr in enumerate(prompts):
@@ -146,6 +149,11 @@ def main():
         deadline = time.time() + timeout                                                           # one budget for both collects
         got = rq.collect([s["key"] for s in samples], per_video, timeout) if per_video else {s["key"]: {} for s in samples}
         ggot = rq.collect(list(gkeys.values()), per_group, max(deadline - time.time(), 1.0)) if per_group else {}
+        keep = int(run.get("keep_videos_every", 5))    # scored: drop the videos of other iterations (768 per iteration at 96 ranks)
+        if keep != 1 and (keep <= 0 or it % keep):     # 1 keeps every video, 0 none; the .json sidecars and reward scores stay
+            for s in samples:
+                try: os.remove(s["mp4"])
+                except FileNotFoundError: pass
         batch = []
         for s in samples:
             axes = {}
@@ -183,9 +191,13 @@ def main():
         need = [f"axis/{t}" for t in terms]
         ok = len(history) == a.iters - a.start_iter and all(math.isfinite(m["loss"]) and math.isfinite(m["grad_norm"]) and m["grad_norm"] > 0
                                                             and all(k in m for k in need) for m in history)
-        if world > 1:
-            flag = torch.tensor([1.0 if ok else 0.0], device=device); dist.all_reduce(flag, op=dist.ReduceOp.MIN); ok = bool(flag.item())
-        log(f"SMOKE {'OK' if ok else 'FAIL'} | missing terms {[k for k in need if history and k not in history[-1]]}")
+        free, total = torch.cuda.mem_get_info(device)              # peak = PyTorch's peak + what it does not manage (context, NCCL)
+        mem = (torch.cuda.max_memory_reserved(device) + max(total - free - torch.cuda.memory_reserved(device), 0)) / total
+        if world > 1:                    # one verdict for all ranks, memory included (nodes deciding alone would split the job)
+            f_ok, f_mem = torch.tensor([1.0 if ok else 0.0], device=device), torch.tensor([mem], device=device)
+            dist.all_reduce(f_ok, op=dist.ReduceOp.MIN); dist.all_reduce(f_mem, op=dist.ReduceOp.MAX); ok, mem = bool(f_ok.item()), float(f_mem.item())
+        ok = ok and mem < MAX_SMOKE_MEMORY
+        log(f"SMOKE {'OK' if ok else 'FAIL'} | peak memory {mem:.0%} of the GPU (max over ranks, limit {MAX_SMOKE_MEMORY:.0%}) | missing terms {[k for k in need if history and k not in history[-1]]}")
         if not ok:
             if world > 1: dist.destroy_process_group()
             raise SystemExit(3)

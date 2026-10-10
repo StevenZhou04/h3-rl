@@ -77,19 +77,24 @@ class NFT(Algorithm):
 
     def _groups(self, samples):
         """{gid: {member: (R video, R audio)}} for this rank's groups, with the members other ranks sampled (ranks_per_group > 1)."""
-        mine = [(s["gid"], s["member"], s["R"]["video"], s["R"]["audio"], (s.get("prompt") or {}).get("pid")) for s in samples]
+        pkey = lambda pr: (pr or {}).get("pid") or (pr or {}).get("prompt")       # the prompt text when a pool has no pids
+        mine = [(s["gid"], s["member"], s["R"]["video"], s["R"]["audio"], pkey(s.get("prompt"))) for s in samples]
         if self.ranks_per_group() > 1 and self.T.world > 1:
             import torch.distributed as dist
             parts = [None] * self.T.world; dist.all_gather_object(parts, mine); rows = [x for p in parts for x in p]
         else: rows = mine
         local = {g for g, *_ in mine}; out, pids = {}, {}
-        for g, k, v, u, pid in rows:
-            if g in local: out.setdefault(g, {})[k] = (v, u); pids.setdefault(g, set()).add(pid)
-        n = self.cfg.group_size
-        for g, m in out.items():
-            if sorted(m) != list(range(n)): raise RuntimeError(f"group {g}: members {sorted(m)}, expected 0..{n - 1}")
-            if len(pids[g]) > 1: raise RuntimeError(f"group {g} mixes prompts {sorted(map(str, pids[g]))}: the ranks of a team drew different prompts")
-        return out
+        for g, k, v, u, pid in rows: out.setdefault(g, {})[k] = (v, u); pids.setdefault(g, set()).add(pid)
+        n, err = self.cfg.group_size, ""
+        for g, m in sorted(out.items()):
+            if sorted(m) != list(range(n)): err = err or f"group {g}: members {sorted(m)}, expected 0..{n - 1}"
+            if len(pids[g]) > 1: err = err or f"group {g} mixes prompts {sorted(map(str, pids[g]))[:2]}: the ranks of a team drew different prompts"
+        if self.T.world > 1:                      # decided together: a rank raising alone would leave the others in the gradient all-reduce
+            import torch, torch.distributed as dist
+            flag = torch.tensor([1.0 if err else 0.0], device=self.T.device); dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+            if flag.item() and not err: err = "another rank found an inconsistent prompt group (see its log)"
+        if err: raise RuntimeError(err)
+        return {g: m for g, m in out.items() if g in local}
 
     def _global_sd(self, values):
         """Std of every valid (not missing, not gated) reward of this iteration over all ranks (reference global_std)."""
