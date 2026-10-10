@@ -1,5 +1,6 @@
 # Text alignment (two judges) + frame quality + coherent motion. Each term is z-scored over a running window,
-# combined with these weights, then normalised within each group of rollouts.
-video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.3, flow_motion: 0.5}
+# combined with these weights, then normalised within each group of rollouts. hps 0.3 -> 0.2 (2026-10-10): its larger
+# within-group spread gave it an 18% effective share at 0.3; 0.2 brings it to ~13%.
+video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.2, flow_motion: 0.5}
 audio: {}
 sync: {}
