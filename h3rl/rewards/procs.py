@@ -19,15 +19,17 @@ def env_with_repo(**kw):
 
 class Workers:
     """Reward workers on one queue; GPU workers spread round-robin over `gpus`, CPU workers get no GPU.
-    `replicas` > 1 starts that many copies of every GPU worker (they share the queue), for reward-only nodes."""
-    def __init__(self, names, queue: Path, gpus, replicas: int = 1):
+    `replicas` > 1 starts that many copies of every GPU worker (they share the queue), for reward-only nodes.
+    `env` (the reward config's worker_env, e.g. {FLOW_CAP: 3.0}) is set for every worker, so all nodes score alike."""
+    def __init__(self, names, queue: Path, gpus, replicas: int = 1, env: dict | None = None):
+        extra = {str(k): str(v) for k, v in (env or {}).items()}
         self.names, self.queue, self.procs = [], Path(queue), []; (self.queue / "logs").mkdir(parents=True, exist_ok=True); gi = 0
         for w in names:
             for r in range(1 if w in CPU_WORKERS else replicas):
                 gpu = "" if w in CPU_WORKERS else str(gpus[gi % len(gpus)]); gi += w not in CPU_WORKERS
                 tag = w if r == 0 else f"{w}.{r}"; log = open(self.queue / "logs" / f"{tag}.log", "w")
                 self.procs.append(subprocess.Popen([reward_python(WORKERS[w]["env"]), "-m", f"h3rl.rewards.workers.{w}", "--queue", str(self.queue)],
-                                                   env=env_with_repo(CUDA_VISIBLE_DEVICES=gpu), stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
+                                                   env=env_with_repo(**extra, CUDA_VISIBLE_DEVICES=gpu), stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
                                                    start_new_session=True))   # own process group: stop() also ends pool children
                 self.names.append(tag)
 

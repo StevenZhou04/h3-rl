@@ -4,3 +4,6 @@
 video: {va_ta: 1.0, soli_ta: 0.5, hps: 0.2, flow_motion: 0.5}
 audio: {}
 sync: {}
+# flow_motion settings, set for every reward worker on every node (h3rl/rewards/workers/flowmotion.py). CAP 3.0 since
+# 2026-10-10: at the old 1.5, half of the rollouts saturated and the term only ranked coherence.
+worker_env: {FLOW_CAP: 3.0, FLOW_COH_MAX: 1.0}

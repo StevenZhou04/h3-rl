@@ -84,11 +84,12 @@ def main():
     ap.add_argument("--port", type=int, default=8800); ap.add_argument("--root", default=f"{paths.CACHE}/reward_service")
     ap.add_argument("--workers", nargs="*", default=None, help="override the worker list (default: from the reward config)")
     a = ap.parse_args(); root = Path(a.root); (root / "queue").mkdir(parents=True, exist_ok=True)
-    names = a.workers if a.workers is not None else workers_for(make_combiner(OmegaConf.to_container(OmegaConf.load(a.reward))).terms())
+    rc = OmegaConf.to_container(OmegaConf.load(a.reward))
+    names = a.workers if a.workers is not None else workers_for(make_combiner(rc).terms())
     import signal; signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(143)))   # kill: still stop the workers
     w = None
     try:
-        w = Workers(names, root / "queue", a.gpus, a.replicas) if names else None
+        w = Workers(names, root / "queue", a.gpus, a.replicas, env=rc.get("worker_env")) if names else None
         if w: w.wait_loaded()
         threading.Thread(target=janitor, args=(root, a.keep_s), daemon=True).start()
         srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(root))
