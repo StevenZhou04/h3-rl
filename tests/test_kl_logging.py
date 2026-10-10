@@ -48,7 +48,7 @@ def fake_loss(*a, **k):
     x = next(vals); loss = w.sum() * 0 + x; loss.backward()
     return {"loss": x + 0.01, "loss_policy": x, "loss_kl": 0.01, "kl_video": 2 * x, "kl_audio": 3 * x, "loss_video": x, "fm_video": 0.0}
 A.nft_loss = fake_loss
-samples = [{"gid": "0:0", "member": k, "prompt": {"pid": "p"}, "ctx": None, "R": {"video": float(k), "audio": None}} for k in range(4)]
+samples = [{"group": 0, "gid": "0:0", "member": k, "prompt": {"pid": "p"}, "ctx": None, "R": {"video": float(k), "audio": None}} for k in range(4)]
 mt = algo.update(samples, 0)
 check("(c) NFT.update logs the breakdown, averaged over samples",
       abs(mt["loss_policy"] - 0.4) < 1e-9 and abs(mt["loss_kl"] - 0.01) < 1e-9 and abs(mt["kl_video"] - 0.8) < 1e-9
