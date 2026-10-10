@@ -7,7 +7,7 @@ the gradient steps: old <- eta old + (1 - eta) theta, eta = min(ema_slope * opti
 from __future__ import annotations
 import numpy as np, torch
 from h3rl.algos.base import Algorithm, register
-from h3rl.core.nft import NFTConfig, sample_group, group_r, nft_loss, ema_update, swapped_params
+from h3rl.core.nft import NFTConfig, iter_samples, group_r, nft_loss, ema_update, swapped_params
 from h3rl.core.dist import average_gradients
 
 
@@ -31,10 +31,12 @@ class NFT(Algorithm):
         c = self.T.canvas; self.cfg.frame_count, self.cfg.height, self.cfg.width = c["frames"], c["height"], c["width"]
 
     def rollout(self, ctx, prompt, seed):
+        """Yields the group's samples one by one (the caller decodes and submits each for reward while the next samples).
+        The old policy stays swapped in until the generator is exhausted or closed; consume it fully before updating."""
         self._canvas()
         with swapped_params(self.T.params, self.old):                 # data collection uses the old policy
-            return sample_group(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
-                                [seed + k for k in range(self.cfg.group_size)])
+            yield from iter_samples(self.T.transformer, self.T.network, ctx, self.cfg, self.T.schedule, self.T.device,
+                                    [seed + k for k in range(self.cfg.group_size)])
 
     def _step(self):
         T = self.T

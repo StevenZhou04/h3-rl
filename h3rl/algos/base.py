@@ -43,7 +43,7 @@ class Algorithm:
     def group_size(self) -> int: return int(self.a.get("group_size", 8))
     def prompts_per_step(self) -> int: return int(self.a.get("prompts_per_step", 1))
 
-    def rollout(self, ctx: dict, prompt: dict, seed: int) -> list[dict]:
+    def rollout(self, ctx: dict, prompt: dict, seed: int):   # -> iterable of sample dicts (a list, or a generator for streaming)
         """Sample one group for one prompt. Each returned dict needs `video` and `audio` (final latents); anything else
         the algorithm wants back in update() can be added."""
         raise NotImplementedError

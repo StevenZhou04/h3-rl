@@ -57,12 +57,18 @@ class NFTConfig:
 
 
 # ----------------------------------------------------------------------------- rollouts
-@torch.no_grad()
 def sample_group(transformer, network, ctx: dict, cfg: NFTConfig, schedule, device: torch.device, seeds: list[int]) -> list[dict]:
     """K deterministic ODE samples (HyperFlow grid) with independent initial noise; returns clean latents on CPU."""
+    return list(iter_samples(transformer, network, ctx, cfg, schedule, device, seeds))
+
+
+@torch.no_grad()
+def iter_samples(transformer, network, ctx: dict, cfg: NFTConfig, schedule, device: torch.device, seeds: list[int]):
+    """sample_group one sample at a time (a generator), so the caller can decode and send each to the reward workers while
+    the next one samples. The same seeds give the same samples in the same order."""
     from musubi_tuner.minimax_h3.sampling import initialize_target_latents, augment_condition_latents
     from musubi_tuner.minimax_h3.packing import VIDEO_CHANNELS, AUDIO_CHANNELS, STEREO_CHANNELS
-    layout = ctx["layout"]; out = []
+    layout = ctx["layout"]
     network.set_multiplier(1.0)
     for seed in seeds:
         gen = torch.Generator(device="cpu").manual_seed(int(seed))   # as sample_joint_av_latents: target noise first, then conditions
@@ -80,9 +86,8 @@ def sample_group(transformer, network, ctx: dict, cfg: NFTConfig, schedule, devi
             video, _, _, _ = h3_sde_step(video, pred.video, sv, svn, schedule.video[1], noise_level=0.0)
             audio, _, _, _ = h3_sde_step(audio, pred.audio, sa, san, schedule.audio[1], noise_level=0.0)   # fp32 (no bf16 round trip:
                                                                                                          # early steps move latents by < 1 bf16 ulp)
-        out.append(dict(seed=int(seed), video=video.cpu(), audio=audio.cpu(),
-                        vis_cond=tuple(t.cpu() for t in vis_cond), aud_cond=tuple(t.cpu() for t in aud_cond)))
-    return out
+        yield dict(seed=int(seed), video=video.cpu(), audio=audio.cpu(),
+                   vis_cond=tuple(t.cpu() for t in vis_cond), aud_cond=tuple(t.cpu() for t in aud_cond))
 
 
 def decode_and_write(models: dict, video_lat: torch.Tensor, audio_lat: torch.Tensor, path: str, device: torch.device, fps: int = 24) -> dict:

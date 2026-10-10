@@ -47,6 +47,8 @@ def main():
                             base_lora_paths=([hyper_path] if hyper_path else []) + list(m.get("adapters") or []) or None)
     from h3rl.core.rope_fast import install_fast_rope; install_fast_rope()
     transformer, network = models["transformer"], models["network"]; transformer.enable_gradient_checkpointing()
+    from h3rl.core.checkpointing import limit_checkpointing                   # run.plain_blocks: DiT blocks kept un-checkpointed
+    n_plain = limit_checkpointing(transformer, int(run.get("plain_blocks", 0)))
     schedule = make_schedule(lcfg, device, read_hyperflow_metadata(hyper_path) if hyper_path else None)
     from h3rl.core.hyperflow import bind_schedule; bind_schedule(transformer, schedule)          # HyperFlow two-time endpoints
     params = [p for p in network.parameters() if p.requires_grad]
@@ -89,7 +91,7 @@ def main():
         log(f"resumed from {a.resume} at iteration {a.start_iter} ({'exact' if extra is not None else 'weights only'})")
     tc = f"{paths.CACHE}/text_cache"; pool = [json.loads(l) for l in open(d["pool"])]
     encoded = lambda r, h, w: os.path.exists(f"{tc}/{text_key(r, h, w)}.pt")                  # launch.py encodes every (prompt, canvas) first
-    log(f"algo={ac['name']} infer_steps={infer_steps} workers={workers} pool={len(pool)} world={world}")
+    log(f"algo={ac['name']} infer_steps={infer_steps} workers={workers} pool={len(pool)} world={world} plain_blocks={n_plain}")
     timeout = float(run.get("reward_timeout_s", 1800)); rq = make_backend(run, Q); history = []   # per iteration, all reward kinds together
     tag = f"{time.strftime('%m%d%H%M%S')}{os.getpid() % 10000:04d}"   # reward keys never collide with an earlier run's results
 
@@ -104,6 +106,8 @@ def main():
             if world > 1: dist.destroy_process_group()
             raise SystemExit(f"rank {rank}: {len(cand)} encoded prompts for {frames} frames, need {algo.prompts_per_step()} (run through h3rl.launch to encode)")
         prompts = T.rng.sample(cand, algo.prompts_per_step()); samples = []
+        rtext = lambda s: s["prompt"].get("reward_prompt") or s["prompt"]["prompt"]
+        meta = lambda s: {"camera_move": s["prompt"].get("camera_move"), "audio_prompt": s["prompt"].get("audio_prompt"), "rl_progress": it / max(a.iters, 1)}
         for j, pr in enumerate(prompts):
             hs, tags = torch.load(f"{tc}/{text_key(pr, h, w)}.pt", map_location="cpu", weights_only=False)
             latent = geometry = cond_px = None
@@ -118,11 +122,9 @@ def main():
                 s.update(key=key, mp4=mp4, guard=decode_and_write(models, s["video"], s["audio"], mp4, device), ctx=ctx, prompt=pr, group=j)
                 samples.append(s); json.dump({"key": key, "pid": pr.get("pid"), "prompt": pr.get("prompt"), "task": pr.get("task"), "seed": s.get("seed"),
                                                      "frames": frames, "height": h, "width": w, "guard": s["guard"]}, open(mp4[:-4] + ".json", "w"))
+                rq.submit(key, mp4, rtext(s), per_video, meta(s))   # scored while the next rollouts sample (rewards overlap rollouts)
         t_roll = time.time() - t0
-        # rewards: per-video workers get every rollout, group workers one request per prompt group
-        rtext = lambda s: s["prompt"].get("reward_prompt") or s["prompt"]["prompt"]
-        meta = lambda s: {"camera_move": s["prompt"].get("camera_move"), "audio_prompt": s["prompt"].get("audio_prompt"), "rl_progress": it / max(a.iters, 1)}
-        for s in samples: rq.submit(s["key"], s["mp4"], rtext(s), per_video, meta(s))
+        # rewards: per-video workers already have every rollout; group workers get one request per prompt group
         gkeys = {}
         for j in sorted({s["group"] for s in samples}):
             grp = [s for s in samples if s["group"] == j]; gk = f"{tag}_it{it:04d}_r{rank}_p{j}"; gkeys[j] = gk
