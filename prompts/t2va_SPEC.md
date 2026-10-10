@@ -1,6 +1,6 @@
 # 5 s text-to-video+audio prompts (`source: h3rl_t2va`)
 
-Rows of `example_pool.jsonl` (5 s, `t2va`) and `t2va_pool_v2.jsonl`. One JSON object per line:
+Rows of `t2va_pool_v2.jsonl` and `t2va_heldout_v2.jsonl`. One JSON object per line (`reward_prompt`: the prompt without its sound sentence, for the video judges):
 
 ```json
 {"pid": "t2vb0001", "prompt": "...", "task": "t2va", "image": null, "has_audio": true, "audio_prompt": null,

@@ -164,6 +164,9 @@ A prompt pool is JSONL, one prompt per line:
 ```
 
 `task` is `t2va` (text to video+audio) or `fl2va` (first frame to video+audio; `image` is the frame path).
+`prompts/t2va_pool_v2.jsonl` has 2,076 text-to-video prompts for 5 s clips (`prompts/t2va_SPEC.md`: 8 subject
+categories, 14 camera moves, places worldwide, a sound sentence kept out of `reward_prompt` because the video judges
+cannot hear it); its 64 held-out prompts, with no shared subjects, are `prompts/t2va_heldout_v2.jsonl`.
 `prompts/example_pool.jsonl` has 200 text-to-video prompts for 5 s clips and 92 multi-shot, timecoded prompts for
 10 s clips (`prompts/complexshot_SPEC.md` describes their format; 20 more are held out in `complexshot_heldout.jsonl`).
 

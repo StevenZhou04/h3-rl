@@ -3,7 +3,8 @@
 # node), so 260 iterations ~ 24 h. 96 samples per optimizer step (2x the 2-node runs), 4 steps per iteration.
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/nft_hyperflow_64g.yaml [run.efa=true]
 # Resume after an interruption (same command plus):  run.resume=runs/nft_hf_64g/nft-<N>.train.pt
-# Held-out check of saved checkpoints afterwards:    bash scripts/heldout_eval.sh runs/heldout_64g 0,1,2,3 runs/nft_hf_64g/nft-*.safetensors
+# Held-out check of saved checkpoints afterwards (64 prompts never trained on):
+#   HELDOUT_SET=prompts/t2va_heldout_v2.jsonl bash scripts/heldout_eval.sh runs/heldout_64g 0,1,2,3 runs/nft_hf_64g/nft-*.safetensors
 algo: configs/algo/nft.yaml
 reward: configs/reward/mix_v1.yaml
 algo_overrides:

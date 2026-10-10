@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--eval_set", default=os.path.join(os.path.dirname(__file__), "..", "..", "prompts", "heldout_rl.jsonl"))
     ap.add_argument("--timeout", type=int, default=3600)
     a = ap.parse_args(); A, B = a.arms
-    prompts = {(r := json.loads(l))["eid"]: r["prompt"] for l in open(a.eval_set)}
+    prompts = {(r := json.loads(l))["eid"]: r.get("reward_prompt") or r["prompt"] for l in open(a.eval_set)}   # what the judges read in training
     items = [(f"{arm}__{eid}", p, arm, eid) for arm in (A, B) for p in sorted(glob.glob(f"{a.dir}/{arm}_*/*.mp4"))
              for eid in [os.path.basename(p).rsplit("_s", 1)[0]]]
     unknown = sorted({eid for *_, eid in items if eid not in prompts})

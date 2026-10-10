@@ -6,12 +6,14 @@
 #
 #   bash scripts/heldout_eval.sh runs/heldout 0,1,2,3 runs/nft_hf_mix/nft-00030.safetensors runs/nft_hf_mix/nft-00060.safetensors
 #
+# HELDOUT_SET=prompts/t2va_heldout_v2.jsonl uses the 64 prompts kept out of t2va_pool_v2 (default: the 32 prompts of
+# heldout_rl.jsonl, which are rows of example_pool.jsonl, for comparison with the 2-node runs on that pool).
 # GPUs: one generation process per GPU (~110 GB each, so 141 GB+ cards), then the reward workers spread over the same GPUs.
 # Results: <out>/scores_base_<ckpt>.json and the printed tables (also in <out>/report.txt).
 set -euo pipefail
 [ $# -ge 3 ] || { echo "usage: $0 OUT_DIR GPUS(e.g. 0,1,2,3) CKPT.safetensors [CKPT ...]"; exit 1; }
 OUT=$(realpath -m "$1"); IFS=, read -ra GPUS <<< "$2"; shift 2; CKPTS=("$@")
-REPO=$(cd "$(dirname "$0")/.." && pwd); SET=$REPO/prompts/heldout_rl.jsonl; N=${#GPUS[@]}
+REPO=$(cd "$(dirname "$0")/.." && pwd); SET=$(realpath "${HELDOUT_SET:-$REPO/prompts/heldout_rl.jsonl}"); N=${#GPUS[@]}
 for c in "${CKPTS[@]}"; do [ -f "$c" ] || { echo "missing checkpoint $c"; exit 1; }; done
 mkdir -p "$OUT/shards"; cd "$REPO"
 for i in $(seq 0 $((N - 1))); do awk -v n=$N -v i=$i 'NR % n == i' "$SET" > "$OUT/shards/$i.jsonl"; done
