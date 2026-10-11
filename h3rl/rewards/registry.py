@@ -16,6 +16,7 @@ WORKERS = {
     "pairwise_think": dict(env="main", kind="group", hf={"CodeGoat24/UnifiedReward-Think-qwen3vl-8b": "UnifiedReward-Think-qwen3vl-8b"}, git={}),
     "flowmotion": dict(env="main", hf={}, git={}),        # optical flow, CPU only
     "cutcheck": dict(env="main", hf={}, git={}),          # hard-cut detector, CPU only
+    "brightness": dict(env="main", hf={}, git={}),        # mean luma, CPU only (sanity reward, not a quality term)
 }
 
 # reward term -> worker.  Higher is better for every term except where the weight is negative in the config.
@@ -26,9 +27,10 @@ TERMS = {
     "ur_align": "unifiedreward", "ur_physics": "unifiedreward", "ur_style": "unifiedreward",
     "flow_motion": "flowmotion", "flow_raw": "flowmotion", "flow_coherence": "flowmotion",   # coherent optical-flow motion
     "cut_free": "cutcheck",
+    "bright": "brightness",                                                     # sanity check: can training move the sampler at all
     "think_winrate": "pairwise_think",                                          # group reward: pairwise win rate (VLM judge, both orders)                                                     # penalty for hard cuts in one-shot prompts
 }
-CPU_WORKERS = {"flowmotion", "cutcheck"}
+CPU_WORKERS = {"flowmotion", "cutcheck", "brightness"}
 
 
 def workers_for(terms) -> list[str]:

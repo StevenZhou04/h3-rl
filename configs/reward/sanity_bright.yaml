@@ -1,0 +1,5 @@
+# Sanity check, not a quality reward: mean frame brightness only (h3rl/rewards/workers/brightness.py). Noise-free and
+# visible at a glance, so a ~20-iteration run shows whether the training loop moves the sampler at all.
+video: {bright: 1.0}
+audio: {}
+sync: {}
