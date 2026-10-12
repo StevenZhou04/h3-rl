@@ -1,6 +1,6 @@
 # Reward ablation, wave 2: All three VideoAlign heads.
-# 64 GPUs (8 nodes x 8), the same setup as nft_hyperflow_64g but 60 iterations (~5.5 h; 24 prompt groups per
-# iteration, 2x the 2-node runs). One ablation at a time. See README "Reward ablation".
+# 64 GPUs (8 nodes x 8), one day: the nft_hyperflow_64g setup with only the reward changed (260 iterations,
+# ~5.4 min each). Runs in parallel with the others, each on its own 64-GPU cluster. See README "Reward ablation".
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/va_all.yaml [run.efa=true]
 algo: configs/algo/nft.yaml
 algo_overrides:
@@ -19,10 +19,10 @@ data:
   frame_sizes: {243: [480, 832]}
 run:
   out: runs/abl_va_all
-  iters: 60
+  iters: 260               # HPSv3++'s RL-progress input is iteration / iters: set iters to the planned length
   save_every: 10
-  keep_recent: 2
-  keep_every: 30            # keeps nft-00030 and nft-00060 for the held-out check
+  keep_recent: 3
+  keep_every: 20
   keep_videos_every: 10
   train_gpus: [0, 1, 2, 3, 4, 5]
   reward_gpus: [6, 7]

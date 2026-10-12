@@ -156,8 +156,9 @@ Evaluate each with "Evaluating a run" below.
 
 ### Reward ablation
 
-Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 12 runs, each on all 64 GPUs
-(the `nft_hyperflow_64g` setup, 60 iterations, ~5.5 h each), run one after another in this order (~65 h for all):
+Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 12 one-day runs, each on its own 64-GPU
+cluster (the `nft_hyperflow_64g` setup with only the reward changed; the `think_*` runs keep groups on one rank, 130
+iterations), all in parallel. The waves are only a priority order if fewer clusters are free:
 
 | Wave | Runs (reward) |
 |---|---|
@@ -165,12 +166,14 @@ Which judges are worth training on, alone or combined? `configs/experiments/abla
 | 2 | `soli_ta`, `flow_motion` (alone); `va_ta_vq` (va_ta + va_vq); `va_all` (va_ta + 0.5 va_vq + 0.5 va_mq) |
 | 3 | `mix_v1` (reference: the current mix); `quality_v2`; `va_ta_hps` (va_ta + 0.3 hps); `think_va_ta` (think_winrate + 0.5 va_ta) |
 
-Launch each on the 8 nodes: `bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/<name>.yaml`
-(outputs `runs/abl_<name>`, distinct ports). A wave is ~22 h; evaluate after each. Run `scripts/reward_sanity.py --workers pairwise_think` before the
+Launch each on its cluster: `bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/<name>.yaml`
+(outputs `runs/abl_<name>`, distinct ports). With the 4 full recipes above that is 16 one-day runs (the brightness
+sanity run is ~2 h). Run `scripts/reward_sanity.py --workers pairwise_think` before the
 `think_*` runs. Then, on one free 8-GPU node:
 
 ```bash
 bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* at its last iteration; rerun to add runs that finish later
+# (runs on other clusters: copy or mount their runs/abl_<name>/config.json and final nft-*.safetensors into runs/ first)
 ```
 
 It generates the 64 held-out prompts once with base and once per run (arms are named after the run), scores them, and
