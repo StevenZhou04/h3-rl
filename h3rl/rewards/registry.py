@@ -25,7 +25,7 @@ TERMS = {
     "hps": "hpspp", "hps_min": "hpspp",                                         # HPSv3++ frame aesthetics (mean, worst frame)
     "soli_ta": "solireward", "soli_phys": "solireward",                         # SoliReward text alignment, physics/deformity
     "ur_align": "unifiedreward", "ur_physics": "unifiedreward", "ur_style": "unifiedreward",
-    "flow_motion": "flowmotion", "flow_raw": "flowmotion", "flow_coherence": "flowmotion",   # coherent optical-flow motion
+    "flow_motion": "flowmotion", "flow_raw": "flowmotion", "flow_coherence": "flowmotion", "flow_consistency": "flowmotion",   # coherent optical-flow motion
     "cut_free": "cutcheck",
     "bright": "brightness",                                                     # sanity check: can training move the sampler at all
     "think_winrate": "pairwise_think",                                          # group reward: pairwise win rate (VLM judge, both orders)                                                     # penalty for hard cuts in one-shot prompts

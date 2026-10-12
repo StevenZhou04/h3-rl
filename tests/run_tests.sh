@@ -12,7 +12,7 @@ echo "=== 0e checkpoint pruning ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_p
 echo "=== 0f HyperFlow sigma grids and two-time endpoints ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_hyperflow_schedule.py
 echo "=== 0g speed-ups keep results (partial checkpointing, streamed rollouts) ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_speedups.py
 echo "=== 0i NFT loss breakdown (policy vs KL) is logged ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_kl_logging.py
-echo "=== 0j flow_motion cap, coherence clamp, worker_env ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_flow_motion.py
+echo "=== 0j flow_motion cap, coherence clamp, worker_env, behaviour on synthetic motion ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_flow_motion.py
 echo "=== 0h prompt groups split across ranks ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_group_split.py
 echo "=== 0k shared prompt walk (no repeats within an iteration) ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_prompt_draw.py
 echo "=== 3/4 DiffusionNFT loss + SAGE-GRPO switches ==="; CUDA_VISIBLE_DEVICES="" "$PY" tests/test_nft_sage.py

@@ -14,7 +14,7 @@ from h3rl.rewards.procs import Workers
 
 WORKERS = ["videoalign", "hpspp", "solireward", "flowmotion", "cutcheck"]
 TRAINED = ("va_ta", "soli_ta", "hps", "flow_motion")             # the mix_v1 reward terms; the rest are quality checks
-TERMS = ["va_ta", "soli_ta", "hps", "flow_motion", "va_vq", "va_mq", "hps_min", "soli_phys", "flow_raw", "flow_coherence", "n_cuts"]
+TERMS = ["va_ta", "soli_ta", "hps", "flow_motion", "va_vq", "va_mq", "hps_min", "soli_phys", "flow_raw", "flow_coherence", "flow_consistency", "n_cuts"]
 
 
 def paired(d: np.ndarray, rng, n: int = 20000) -> float:
