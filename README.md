@@ -153,6 +153,29 @@ cuts). HPSv3++ is scored without its RL-progress ramp. Tables go to `<out>/repor
 `<out>/scores_base_<ckpt>.json`. The prompts are rows of `example_pool.jsonl`, so later in a run they have been trained
 on too; use a fresh output directory per run, since arms are named after the checkpoint file.
 
+## Evaluating a run
+
+Four steps, in order of weight: the blind human check (3) decides; the other steps explain the result.
+
+1. **Training trend:** `python scripts/run_summary.py <run>/metrics.jsonl` prints the mean of every reward axis and of the
+   learning-signal metrics (`grad_norm`, `R_video_std`, `loss_kl`) over the first, middle and last ~10% of the iterations.
+2. **Held-out rewards vs base** (8 GPUs of 141 GB+, about an hour; use a mid-run and the last checkpoint):
+   `HELDOUT_SET=prompts/t2va_heldout_v2.jsonl bash scripts/heldout_eval.sh runs/heldout 0,1,2,3,4,5,6,7 <run>/nft-000MID.safetensors <run>/nft-000LAST.safetensors`
+   (see Held-out check).
+3. **Blind side-by-side** (`h3rl/eval/blind_pairs.py`) on the videos of step 2:
+   `python -m h3rl.eval.blind_pairs --dir runs/heldout --arms base nft-000LAST --n 32` writes `pair_NN.mp4` (base and
+   checkpoint side by side, sides random) and `picks.txt` to `runs/heldout/blind_base_nft-000LAST/`. A person watches
+   every pair and writes `A` (left better), `B` (right better) or `=` after its number, optionally with a reason
+   (`07 B sharper hands`), without opening `.key.json`; then the same command with `--reveal` prints the wins, losses,
+   ties, the win rate and a sign test, and the reasons per outcome. The eval videos have no audio.
+4. **Reward-hacking flags**, noted while watching (RL vs base): brighter or more saturated; jittery or shaky; more
+   static; flicker or texture artifacts; worse faces or hands; hard cuts.
+
+Reading the result: an RL win rate of 0.65 or more with p < 0.05 and consistent reasons means RL helps; 0.4-0.6 means
+no visible difference (the rewards do not track what people see); below 0.4, or any hacking flag, means RL hurts. If
+`hps` or `flow_motion` rise in step 2 while `va_vq` or `va_mq` fall, quality is being traded for motion or aesthetics.
+`R_video_std` near 0, or a tiny flat `grad_norm`, in step 1 means little learning signal: changes are drift.
+
 ## Prompts
 
 A prompt pool is JSONL, one prompt per line:
@@ -236,9 +259,9 @@ h3rl/algos/             base.py (interface + registry), nft.py (DiffusionNFT), g
 h3rl/core/              model loading and context building, samplers (ODE/SDE), NFT and GRPO losses, DDP helpers
 h3rl/rewards/           combine.py (combiners), registry.py, queue.py, worker_base.py (Worker, GroupWorker), workers/
 h3rl/data/encode.py     text-encoder cache for a prompt pool
-h3rl/eval/              held-out generation and scoring
+h3rl/eval/              held-out generation, reward scoring (reward_check.py), blind side-by-side (blind_pairs.py)
 configs/                algo/, reward/, experiments/
-scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh
+scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh, run_summary.py
 envs/                   pinned package versions for the two environments
 tests/                  correctness tests
 ```
