@@ -7,7 +7,7 @@
 algo: configs/algo/nft.yaml
 reward: configs/reward/pairwise_v2.yaml
 algo_overrides:
-  ranks_per_group: 2
+  ranks_per_group: 1       # a group reward needs every group on one rank (48 groups per iteration, ~2x slower)
 model:
   hyperflow: default
   infer_steps: null
@@ -18,7 +18,7 @@ data:
   frame_sizes: {243: [480, 832]}
 run:
   out: runs/nft_hf_64g_pairwise
-  iters: 260                # HPSv3++'s RL-progress input is iteration / iters: set iters to the planned length
+  iters: 130               # ~11 min per iteration at ranks_per_group 1: ~1 day
   save_every: 10            # LoRA ~285 MB; resume state ~2.3 GB
   keep_recent: 3            # resume states and LoRAs of the last 3 saves ...
   keep_every: 20            # ... plus every 20th iteration (13 checkpoints over the day) for the held-out comparison

@@ -1,8 +1,10 @@
 # Reward ablation, wave 3: Pairwise judge + alignment, no floors (compare with nft_hf_64g_pairwise).
-# 2 nodes x 8 GPUs, same algorithm and budget as the 2-node mix runs (60 iterations, ~11 h); 4 ablations run at once on
-# 64 GPUs, one hosts file per node pair. See README "Reward ablation".
-#   bash scripts/launch_multinode.sh hosts_pair<N>.txt configs/experiments/ablation/think_va_ta.yaml [run.efa=true]
+# 64 GPUs (8 nodes x 8), as nft_hyperflow_64g but ranks_per_group 1 (group reward) and 30 iterations of 48 groups
+# (~5.5 h, the same rollouts as the other ablations). One ablation at a time. See README "Reward ablation".
+#   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/think_va_ta.yaml [run.efa=true]
 algo: configs/algo/nft.yaml
+algo_overrides:
+  ranks_per_group: 1       # a group reward needs every group on one rank: 48 groups per iteration, ~2x slower
 reward:
   video: {think_winrate: 1.0, va_ta: 0.5}
   audio: {}
@@ -17,10 +19,10 @@ data:
   frame_sizes: {243: [480, 832]}
 run:
   out: runs/abl_think_va_ta
-  iters: 60
+  iters: 30
   save_every: 10
   keep_recent: 2
-  keep_every: 30            # keeps nft-00030 and nft-00060 for the held-out check
+  keep_every: 30            # keeps nft-00030 for the held-out check
   keep_videos_every: 10
   train_gpus: [0, 1, 2, 3, 4, 5]
   reward_gpus: [6, 7]

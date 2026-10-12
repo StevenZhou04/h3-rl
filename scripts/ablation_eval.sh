@@ -1,22 +1,23 @@
 #!/bin/bash
-# Held-out check of a reward ablation: the checkpoint at ITER of every runs/abl_<name> run against the base model, on the
+# Held-out check of a reward ablation: the final checkpoint (or the one at ITER) of every runs/abl_<name> run against the base model, on the
 # 64 held-out prompts, then one table of every judge term per run (h3rl.eval.ablation_table). Arms are named after the
 # run (checkpoints are linked as <out>/ckpts/<name>.safetensors), so the base videos are made once and shared.
 # Rerunnable: finished videos and scores are kept, so runs that finish later are added by running it again.
 #
-#   bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7 [ITER=60] [RUN_DIR ...]   (default: every runs/abl_*)
+#   bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7 [ITER] [RUN_DIR ...]   (default: every runs/abl_*, each at its last iteration)
 set -euo pipefail
 [ $# -ge 2 ] || { echo "usage: $0 OUT_DIR GPUS [ITER] [RUN_DIR ...]"; exit 1; }
-OUT=$(realpath -m "$1"); GPUS=$2; shift 2; ITER=60
+OUT=$(realpath -m "$1"); GPUS=$2; shift 2; ITER=
 if [[ ${1:-} =~ ^[0-9]+$ ]]; then ITER=$1; shift; fi
 REPO=$(cd "$(dirname "$0")/.." && pwd); RUNS=("$@"); [ ${#RUNS[@]} -gt 0 ] || RUNS=("$REPO"/runs/abl_*)
 mkdir -p "$OUT/ckpts"; CKPTS=()
 for r in "${RUNS[@]}"; do
-  c="$r/nft-$(printf %05d "$ITER").safetensors"
+  it=${ITER:-$(python -c 'import json,sys;print(json.load(open(sys.argv[1]))["run"]["iters"])' "$r/config.json" 2>/dev/null || echo 0)}
+  c="$r/nft-$(printf %05d "$it").safetensors"
   if [ -f "$c" ]; then n=$(basename "$r"); n=${n#abl_}; ln -sf "$(realpath "$c")" "$OUT/ckpts/$n.safetensors"; CKPTS+=("$OUT/ckpts/$n.safetensors")
   else echo "skip $r: no $(basename "$c") yet"; fi
 done
-[ ${#CKPTS[@]} -gt 0 ] || { echo "no checkpoints at iteration $ITER"; exit 1; }
+[ ${#CKPTS[@]} -gt 0 ] || { echo "no finished checkpoints"; exit 1; }
 todo=()
 for c in "${CKPTS[@]}"; do [ -f "$OUT/scores_base_$(basename "$c" .safetensors).json" ] || todo+=("$c"); done
 [ ${#todo[@]} -eq 0 ] || HELDOUT_SET="${HELDOUT_SET:-$REPO/prompts/t2va_heldout_v2.jsonl}" bash "$REPO/scripts/heldout_eval.sh" "$OUT" "$GPUS" "${todo[@]}"
