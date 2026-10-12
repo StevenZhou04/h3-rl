@@ -154,6 +154,32 @@ Best-effort order:
 
 Evaluate each with "Evaluating a run" below.
 
+### Reward ablation
+
+Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 12 two-node runs (16 GPUs,
+the same algorithm and budget as the 2-node mix runs: 60 iterations, ~11 h each), so 64 GPUs run 4 at once:
+
+| Wave | Runs (reward) |
+|---|---|
+| 1 | `va_ta`, `va_vq`, `hps`, `think_winrate` (each alone) |
+| 2 | `soli_ta`, `flow_motion` (alone); `va_ta_vq` (va_ta + va_vq); `va_all` (va_ta + 0.5 va_vq + 0.5 va_mq) |
+| 3 | `mix_v1` (reference: the current mix); `quality_v2`; `va_ta_hps` (va_ta + 0.3 hps); `think_va_ta` (think_winrate + 0.5 va_ta) |
+
+Launch each on its own node pair: `bash scripts/launch_multinode.sh hosts_pairN.txt configs/experiments/ablation/<name>.yaml`
+(outputs `runs/abl_<name>`, distinct ports). Run `scripts/reward_sanity.py --workers pairwise_think` before the
+`think_*` runs. Then, on one free 8-GPU node:
+
+```bash
+bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* at iteration 60; rerun to add runs that finish later
+```
+
+It generates the 64 held-out prompts once with base and once per run (arms are named after the run), scores them, and
+prints one table (`runs/heldout_abl/ablation_table.txt`): a row per run, a column per judge, each cell the held-out
+change vs base in base-SD units, `*` for p < 0.05, `[ ]` around the terms the run was trained on. A good reward raises
+its own column *and* does not lower the others (especially `va_vq`, `va_mq`); a column that rises only for the run
+trained on it is a judge being gamed. Blind-check the 2-3 best rows: `python -m h3rl.eval.blind_pairs --dir
+runs/heldout_abl --arms base <name> --n 32` (see "Evaluating a run").
+
 ## Held-out check
 
 ```bash
@@ -276,7 +302,7 @@ h3rl/rewards/           combine.py (combiners), registry.py, queue.py, worker_ba
 h3rl/data/encode.py     text-encoder cache for a prompt pool
 h3rl/eval/              held-out generation, reward scoring (reward_check.py), blind side-by-side (blind_pairs.py)
 configs/                algo/, reward/, experiments/
-scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh, run_summary.py
+scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh, run_summary.py, ablation_eval.sh
 envs/                   pinned package versions for the two environments
 tests/                  correctness tests
 ```

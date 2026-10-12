@@ -1,0 +1,29 @@
+# Reward ablation, wave 2: Optical-flow motion alone: the only term that improved held-out in the mix; expect motion hacking.
+# 2 nodes x 8 GPUs, same algorithm and budget as the 2-node mix runs (60 iterations, ~11 h); 4 ablations run at once on
+# 64 GPUs, one hosts file per node pair. See README "Reward ablation".
+#   bash scripts/launch_multinode.sh hosts_pair<N>.txt configs/experiments/ablation/flow_motion.yaml [run.efa=true]
+algo: configs/algo/nft.yaml
+reward:
+  video: {flow_motion: 1.0}
+  audio: {}
+  sync: {}
+  worker_env: {FLOW_CAP: 3.0, FLOW_COH_MAX: 1.0}
+model:
+  hyperflow: default
+  infer_steps: null
+data:
+  pool: prompts/t2va_pool_v2.jsonl   # held-out prompts (t2va_heldout_v2.jsonl) are not in it
+  frames: [124]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/abl_flow_motion
+  iters: 60
+  save_every: 10
+  keep_recent: 2
+  keep_every: 30            # keeps nft-00030 and nft-00060 for the held-out check
+  keep_videos_every: 10
+  train_gpus: [0, 1, 2, 3, 4, 5]
+  reward_gpus: [6, 7]
+  port: 29835
+  smoke: true
