@@ -10,6 +10,7 @@
 # heldout_rl.jsonl, which are rows of example_pool.jsonl, for comparison with the 2-node runs on that pool).
 # GPUs: one generation process per GPU (~110 GB each, so 141 GB+ cards), then the reward workers spread over the same GPUs.
 # Results: <out>/scores_base_<ckpt>.json and the printed tables (also in <out>/report.txt).
+# Blind human check afterwards: python -m h3rl.eval.blind_pairs --dir <out> --arms base <ckpt name> (then --reveal).
 set -euo pipefail
 [ $# -ge 3 ] || { echo "usage: $0 OUT_DIR GPUS(e.g. 0,1,2,3) CKPT.safetensors [CKPT ...]"; exit 1; }
 OUT=$(realpath -m "$1"); IFS=, read -ra GPUS <<< "$2"; shift 2; CKPTS=("$@")
