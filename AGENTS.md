@@ -1,5 +1,10 @@
 # Notes for coding agents
 
+## Training recipes
+
+The 64-GPU recipes and their order are in README.md, "64-GPU recipes". Launch one only when asked, on GPUs no one
+else is using, and report the first 3 iterations' log lines (loss, grad_norm, t_rollout, t_reward, any reward errors).
+
 ## Evaluating a training run
 
 When asked to evaluate a run (e.g. the 64-GPU NFT run), follow "Evaluating a run" in README.md. Rules:

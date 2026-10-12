@@ -139,6 +139,21 @@ Reward details: each term is z-scored over a running window (`z_window_iters: 16
 the same on every rank) before weighting. A rollout with any black frame (mean luma < 10) or luma strobing on more than
 5% of frame transitions counts as broken and ranks last in its group; watch `worst_frac` on prompts that fade to black.
 
+### 64-GPU recipes
+
+All on 8 nodes x 8 GPUs like `nft_hyperflow_64g.yaml` (mix_v1 reward), launched the same way
+(`bash scripts/launch_multinode.sh hosts.txt configs/experiments/<recipe>.yaml`), each with its own `run.out` and port.
+Best-effort order:
+
+| Recipe | Changes vs nft_hyperflow_64g | Time | Question it answers |
+|---|---|---|---|
+| `nft_hf_64g_sanity_bright` | reward = mean frame brightness only | ~2 h, 20 it | Does the loop learn a target it certainly can? If videos are not clearly brighter, stop: the trainer is broken. |
+| `nft_hf_64g_quality` | reward `quality_v2`: va_ta 1, va_vq 0.5, flow_motion 0.3; floors va_vq, va_mq; hard-cut gate | 1 day | Does a sharper reward give a visible held-out win? |
+| `nft_hf_64g_quality_kl` | quality_v2 + kl_beta 1e-2 + timesteps_per_sample 2 | 1 day, 175 it | Does anchoring to HyperFlow and more signal per rollout reduce drift? Check loss_kl vs loss_policy early. |
+| `nft_hf_64g_pairwise` | reward `pairwise_v2`: pairwise VLM win rate 1, va_ta 0.5, flow_motion 0.2; va_vq floor; gate | 1 day | Do relative judgments beat absolute scores? Run reward_sanity.py on pairwise_think first. |
+
+Evaluate each with "Evaluating a run" below.
+
 ## Held-out check
 
 ```bash

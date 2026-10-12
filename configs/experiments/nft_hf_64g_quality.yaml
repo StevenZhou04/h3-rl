@@ -1,0 +1,28 @@
+# Recipe 1, one day on 64 GPUs: same algorithm as nft_hyperflow_64g, reward changed only (configs/reward/quality_v2.yaml):
+# text alignment + visual quality + a little motion, floors on visual and motion quality, hard-cut gate. Tests whether
+# a sharper reward turns into a visible held-out improvement (README: Evaluating a run).
+#   bash scripts/launch_multinode.sh hosts.txt configs/experiments/nft_hf_64g_quality.yaml [run.efa=true]
+#   resume: same command plus run.resume=runs/nft_hf_64g_quality/nft-<N>.train.pt
+algo: configs/algo/nft.yaml
+reward: configs/reward/quality_v2.yaml
+algo_overrides:
+  ranks_per_group: 2
+model:
+  hyperflow: default
+  infer_steps: null
+data:
+  pool: prompts/t2va_pool_v2.jsonl   # ~2,000 5 s prompts: each used ~3 times in 260 iterations; held-out prompts are not in it
+  frames: [124]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/nft_hf_64g_quality
+  iters: 260                # HPSv3++'s RL-progress input is iteration / iters: set iters to the planned length
+  save_every: 10            # LoRA ~285 MB; resume state ~2.3 GB
+  keep_recent: 3            # resume states and LoRAs of the last 3 saves ...
+  keep_every: 20            # ... plus every 20th iteration (13 checkpoints over the day) for the held-out comparison
+  keep_videos_every: 10
+  train_gpus: [0, 1, 2, 3, 4, 5]
+  reward_gpus: [6, 7]
+  port: 29812
+  smoke: true

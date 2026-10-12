@@ -1,0 +1,29 @@
+# Recipe 3, one day on 64 GPUs: a pairwise VLM judge as the main reward (configs/reward/pairwise_v2.yaml). Slower
+# rewards: ~2 x PAIRS_PER_MEMBER (3) judgments per rollout on the 2 reward GPUs per node; watch t_reward vs t_rollout
+# in the log and lower PAIRS_PER_MEMBER to 2 if rewards become the bottleneck. Run scripts/reward_sanity.py with
+# --workers pairwise_think first: this judge has not been checked on H3 rollouts yet.
+#   bash scripts/launch_multinode.sh hosts.txt configs/experiments/nft_hf_64g_pairwise.yaml [run.efa=true]
+#   resume: same command plus run.resume=runs/nft_hf_64g_pairwise/nft-<N>.train.pt
+algo: configs/algo/nft.yaml
+reward: configs/reward/pairwise_v2.yaml
+algo_overrides:
+  ranks_per_group: 2
+model:
+  hyperflow: default
+  infer_steps: null
+data:
+  pool: prompts/t2va_pool_v2.jsonl   # ~2,000 5 s prompts: each used ~3 times in 260 iterations; held-out prompts are not in it
+  frames: [124]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/nft_hf_64g_pairwise
+  iters: 260                # HPSv3++'s RL-progress input is iteration / iters: set iters to the planned length
+  save_every: 10            # LoRA ~285 MB; resume state ~2.3 GB
+  keep_recent: 3            # resume states and LoRAs of the last 3 saves ...
+  keep_every: 20            # ... plus every 20th iteration (13 checkpoints over the day) for the held-out comparison
+  keep_videos_every: 10
+  train_gpus: [0, 1, 2, 3, 4, 5]
+  reward_gpus: [6, 7]
+  port: 29814
+  smoke: true

@@ -1,0 +1,33 @@
+# Recipe 2, one day on 64 GPUs: recipe 1 plus algorithm changes. The 2-node LoRA drifted as far from the HyperFlow
+# weights as HyperFlow is from base, mostly orthogonal to it, with tiny gradient norms (Adam-driven drift); kl_beta
+# 1e-4 is effectively off (weight kl_beta * beta / adv_clip_max). kl_beta 1e-2 anchors it to the HyperFlow model;
+# timesteps_per_sample 2 trains on two sampler steps per rollout for more signal per rollout (~1.5x iteration time,
+# so ~175 iterations a day). The KL strength is a first guess: check kl_video and loss_kl vs loss_policy in
+# metrics.jsonl after ~10 iterations; if loss_kl is under 1% of loss_policy, it is still too weak.
+#   bash scripts/launch_multinode.sh hosts.txt configs/experiments/nft_hf_64g_quality_kl.yaml [run.efa=true]
+#   resume: same command plus run.resume=runs/nft_hf_64g_quality_kl/nft-<N>.train.pt
+algo: configs/algo/nft.yaml
+reward: configs/reward/quality_v2.yaml
+algo_overrides:
+  ranks_per_group: 2
+  kl_beta: 1.0e-2
+  timesteps_per_sample: 2
+model:
+  hyperflow: default
+  infer_steps: null
+data:
+  pool: prompts/t2va_pool_v2.jsonl   # ~2,000 5 s prompts: each used ~3 times in 260 iterations; held-out prompts are not in it
+  frames: [124]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/nft_hf_64g_quality_kl
+  iters: 175
+  save_every: 10            # LoRA ~285 MB; resume state ~2.3 GB
+  keep_recent: 3            # resume states and LoRAs of the last 3 saves ...
+  keep_every: 20            # ... plus every 20th iteration (13 checkpoints over the day) for the held-out comparison
+  keep_videos_every: 10
+  train_gpus: [0, 1, 2, 3, 4, 5]
+  reward_gpus: [6, 7]
+  port: 29813
+  smoke: true

@@ -1,0 +1,12 @@
+# mix_v1 lessons (2-node runs, 2026-10-11): judges that disagree (soli_ta vs hps, va_mq vs flow_motion) average into a
+# noisy target, and quality (va_vq) drifted down while hps and motion rose. Fewer terms, visual quality rewarded
+# directly, floors so neither visual nor motion quality (va_mq fell as flow_motion rose) can be traded away, and the
+# hard-cut gate. All terms come from VideoAlign, flow and the cut check: no HPSv3++ worker.
+combine: weighted_z
+video: {va_ta: 1.0, va_vq: 0.5, flow_motion: 0.3}
+audio: {}
+sync: {}
+gates: {cut_free: {min: 0}}     # a rollout with a hard cut in a one-shot prompt ranks last in its group
+floors: {va_vq: 0.5, va_mq: 0.5}  # not hps_min: HPSv3++ ramps with RL progress, so a reference fixed early never triggers
+floor_warmup: 64
+worker_env: {FLOW_CAP: 3.0, FLOW_COH_MAX: 1.0}

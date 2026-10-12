@@ -1,0 +1,11 @@
+# A pairwise VLM judge (UnifiedReward-Think, both orders) as the main signal: comparing two rollouts of the same prompt
+# is what the group advantage needs, and side-by-side judgments are steadier than absolute scores. Text alignment and
+# the quality floor keep it honest. Slower: ~2 x PAIRS_PER_MEMBER judgments per rollout.
+combine: weighted_z
+video: {think_winrate: 1.0, va_ta: 0.5, flow_motion: 0.2}
+audio: {}
+sync: {}
+gates: {cut_free: {min: 0}}
+floors: {va_vq: 0.5}
+floor_warmup: 64
+worker_env: {FLOW_CAP: 3.0, FLOW_COH_MAX: 1.0}

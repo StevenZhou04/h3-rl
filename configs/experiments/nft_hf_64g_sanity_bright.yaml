@@ -1,0 +1,29 @@
+# Pipeline sanity check, ~2 h: the only reward is mean frame brightness, a target the model can certainly learn. If
+# rollouts are not clearly brighter after 20 iterations (axis/bright in metrics.jsonl rises by well over its
+# within-group spread, and the held-out videos look brighter), the training loop is broken and no reward recipe will
+# help. Run it before the others when GPUs allow. The brightness worker runs on CPU.
+#   bash scripts/launch_multinode.sh hosts.txt configs/experiments/nft_hf_64g_sanity_bright.yaml [run.efa=true]
+#   resume: same command plus run.resume=runs/nft_hf_64g_bright/nft-<N>.train.pt
+algo: configs/algo/nft.yaml
+reward: configs/reward/sanity_bright.yaml
+algo_overrides:
+  ranks_per_group: 2
+model:
+  hyperflow: default
+  infer_steps: null
+data:
+  pool: prompts/t2va_pool_v2.jsonl   # ~2,000 5 s prompts: each used ~3 times in 260 iterations; held-out prompts are not in it
+  frames: [124]
+  size: [544, 960]
+  frame_sizes: {243: [480, 832]}
+run:
+  out: runs/nft_hf_64g_bright
+  iters: 20
+  save_every: 10            # LoRA ~285 MB; resume state ~2.3 GB
+  keep_recent: 3            # resume states and LoRAs of the last 3 saves ...
+  keep_every: 20            # ... plus every 20th iteration (13 checkpoints over the day) for the held-out comparison
+  keep_videos_every: 10
+  train_gpus: [0, 1, 2, 3, 4, 5]
+  reward_gpus: [6, 7]
+  port: 29811
+  smoke: true
