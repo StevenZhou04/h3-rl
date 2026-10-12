@@ -147,7 +147,6 @@ Start order: see "Priority" below.
 
 | Recipe | Changes vs nft_hyperflow_64g | Time | Question it answers |
 |---|---|---|---|
-| `nft_hf_64g_sanity_bright` | reward = mean frame brightness only | ~2 h, 20 it | Does the loop learn a target it certainly can? If videos are not clearly brighter, stop: the trainer is broken. |
 | `nft_hf_64g_quality` | reward `quality_v2`: va_ta 1, va_vq 0.5, flow_motion 0.3; floors va_vq, va_mq; hard-cut gate | 1 day | Does a sharper reward give a visible held-out win? |
 | `nft_hf_64g_quality_kl` | quality_v2 + kl_beta 1e-2 + timesteps_per_sample 2 | 1 day, 175 it | Does anchoring to HyperFlow and more signal per rollout reduce drift? Check loss_kl vs loss_policy early. |
 | `nft_hf_64g_pairwise` | reward `pairwise_v2`: pairwise VLM win rate 1, va_ta 0.5, flow_motion 0.2; va_vq floor; gate | 1 day | Do relative judgments beat absolute scores? Run reward_sanity.py on pairwise_think first. |
@@ -164,12 +163,12 @@ rank, 130 iterations): alone `va_ta`, `va_vq`, `hps`, `soli_ta`, `flow_motion`, 
 mix_v1 reward) and `nft_hf_64g_quality` (quality_v2). Start them in the order of "Priority" below.
 
 Launch each on its cluster: `bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/<name>.yaml`
-(outputs `runs/abl_<name>`, distinct ports). With the 4 recipes above that is 14 runs: 13 one-day runs and the ~2 h
-brightness sanity run (plus the current `nft_hyperflow_64g` run). Run `scripts/reward_sanity.py --workers pairwise_think` before the
+(outputs `runs/abl_<name>`, distinct ports). With the 3 recipes above that is 13 one-day runs (plus the current
+`nft_hyperflow_64g` run). Run `scripts/reward_sanity.py --workers pairwise_think` before the
 `think_*` runs. Then, on one free 8-GPU node:
 
 ```bash
-bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* and runs/nft_hf_64g* (not the brightness run) at its last iteration;
+bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* and runs/nft_hf_64g* at its last iteration;
 # rerun to add runs that finish later. Runs on other clusters: copy or mount their config.json and final
 # nft-*.safetensors into runs/<run name>/ first
 ```
@@ -187,22 +186,21 @@ Start the recipes in this order, as many at once as there are free 64-GPU cluste
 
 | # | Recipe | Why here |
 |---|---|---|
-| 1 | `nft_hf_64g_sanity_bright` | ~2 h gate: if the videos do not get clearly brighter, the trainer is broken; stop everything else and report. |
-| 2 | `nft_hf_64g_quality` | The main candidate: a sharper reward with quality floors. |
-| 3 | `ablation/va_ta` | Text alignment, the term every mix is built on: does it help on its own? |
-| 4 | `ablation/va_vq` | Visual quality, the term that fell in the mix runs: can it be raised directly? |
-| 5 | `nft_hf_64g_quality_kl` | Same reward as 2 with a real KL anchor: tells whether drift, not the reward, hides the gains. |
-| 6 | `ablation/va_ta_vq` | The simplest combination of 3 and 4, one judge family. |
-| 7 | `nft_hf_64g_pairwise` | Only if `scripts/reward_sanity.py --workers pairwise_think` passes. |
-| 8 | `ablation/think_winrate` | Same condition as 7: the pairwise judge alone. |
-| 9 | `ablation/va_all` | Adds motion quality (va_mq) to 6. |
-| 10 | `ablation/hps` | Aesthetics alone; likely to be gamed, which is itself worth knowing. |
-| 11 | `ablation/flow_motion` | Motion alone; the one term that moved held-out before, and the most likely to be gamed. |
-| 12 | `ablation/soli_ta` | The second text-alignment judge, which disagreed with va_ta. |
-| 13 | `ablation/va_ta_hps` | Alignment + aesthetics. |
-| 14 | `ablation/think_va_ta` | Same condition as 7: pairwise judge + alignment. |
+| 1 | `nft_hf_64g_quality` | The main candidate: a sharper reward with quality floors. |
+| 2 | `ablation/va_ta` | Text alignment, the term every mix is built on: does it help on its own? |
+| 3 | `ablation/va_vq` | Visual quality, the term that fell in the mix runs: can it be raised directly? |
+| 4 | `nft_hf_64g_quality_kl` | Same reward as 1 with a real KL anchor: tells whether drift, not the reward, hides the gains. |
+| 5 | `ablation/va_ta_vq` | The simplest combination of 2 and 3, one judge family. |
+| 6 | `nft_hf_64g_pairwise` | Only if `scripts/reward_sanity.py --workers pairwise_think` passes. |
+| 7 | `ablation/think_winrate` | Same condition as 6: the pairwise judge alone. |
+| 8 | `ablation/va_all` | Adds motion quality (va_mq) to 5. |
+| 9 | `ablation/hps` | Aesthetics alone; likely to be gamed, which is itself worth knowing. |
+| 10 | `ablation/flow_motion` | Motion alone; the one term that moved held-out before, and the most likely to be gamed. |
+| 11 | `ablation/soli_ta` | The second text-alignment judge, which disagreed with va_ta. |
+| 12 | `ablation/va_ta_hps` | Alignment + aesthetics. |
+| 13 | `ablation/think_va_ta` | Same condition as 6: pairwise judge + alignment. |
 
-If the pairwise sanity check fails, skip 7, 8 and 14 and move the rest up.
+If the pairwise sanity check fails, skip 6, 7 and 13 and move the rest up.
 
 ## Held-out check
 

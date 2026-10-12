@@ -1,4 +1,4 @@
-# Reward ablation, priority 13 of 14 (README "Priority"): Alignment + aesthetics.
+# Reward ablation, priority 12 of 13 (README "Priority"): Alignment + aesthetics.
 # 64 GPUs (8 nodes x 8), one day: the nft_hyperflow_64g setup with only the reward changed (260 iterations,
 # ~5.4 min each). Runs in parallel with the others, each on its own 64-GPU cluster. See README "Reward ablation".
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/va_ta_hps.yaml [run.efa=true]

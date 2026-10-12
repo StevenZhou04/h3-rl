@@ -1,4 +1,4 @@
-# Reward ablation, priority 6 of 14 (README "Priority"): VideoAlign alignment + visual quality: one judge family, no conflicting judges.
+# Reward ablation, priority 5 of 13 (README "Priority"): VideoAlign alignment + visual quality: one judge family, no conflicting judges.
 # 64 GPUs (8 nodes x 8), one day: the nft_hyperflow_64g setup with only the reward changed (260 iterations,
 # ~5.4 min each). Runs in parallel with the others, each on its own 64-GPU cluster. See README "Reward ablation".
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/va_ta_vq.yaml [run.efa=true]
