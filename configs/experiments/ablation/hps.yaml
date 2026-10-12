@@ -1,4 +1,4 @@
-# Reward ablation, wave 1: HPSv3++ frame aesthetics alone (its in-training score ramps with progress; judge held-out).
+# Reward ablation, priority 10 of 14 (README "Priority"): HPSv3++ frame aesthetics alone (its in-training score ramps with progress; judge held-out).
 # 64 GPUs (8 nodes x 8), one day: the nft_hyperflow_64g setup with only the reward changed (260 iterations,
 # ~5.4 min each). Runs in parallel with the others, each on its own 64-GPU cluster. See README "Reward ablation".
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/hps.yaml [run.efa=true]

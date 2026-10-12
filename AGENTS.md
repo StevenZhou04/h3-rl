@@ -5,8 +5,8 @@
 The 64-GPU recipes and their order are in README.md, "64-GPU recipes". Launch one only when asked, on GPUs no one
 else is using, and report the first 3 iterations' log lines (loss, grad_norm, t_rollout, t_reward, any reward errors).
 
-For the reward ablation (README "Reward ablation"): each run on its own 64-GPU cluster, all in parallel (wave order
-only if fewer clusters are free); report per run when it starts and finishes (or fails, with the error). After a wave, run `scripts/ablation_eval.sh` and report the whole
+Start recipes in the order of README "Priority" (one per free 64-GPU cluster; skip the pairwise ones if their sanity
+check fails; stop everything if the brightness run does not get brighter). For the reward ablation, report per run when it starts and finishes (or fails, with the error). When runs finish, run `scripts/ablation_eval.sh` and report the whole
 `ablation_table.txt` verbatim (it is meant to be read out), plus `run_summary.py` output for any run whose row looks odd.
 
 ## Evaluating a training run

@@ -143,7 +143,7 @@ the same on every rank) before weighting. A rollout with any black frame (mean l
 
 All on 8 nodes x 8 GPUs like `nft_hyperflow_64g.yaml` (mix_v1 reward), launched the same way
 (`bash scripts/launch_multinode.sh hosts.txt configs/experiments/<recipe>.yaml`), each with its own `run.out` and port.
-Best-effort order:
+Start order: see "Priority" below.
 
 | Recipe | Changes vs nft_hyperflow_64g | Time | Question it answers |
 |---|---|---|---|
@@ -156,18 +156,12 @@ Evaluate each with "Evaluating a run" below.
 
 ### Reward ablation
 
-Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 10 one-day runs, each on its own 64-GPU
-cluster (the `nft_hyperflow_64g` setup with only the reward changed; the `think_*` runs keep groups on one rank, 130
-iterations), all in parallel. The waves are only a priority order if fewer clusters are free:
-
-| Wave | Runs (reward) |
-|---|---|
-| 1 | `va_ta`, `va_vq`, `hps`, `think_winrate` (each alone) |
-| 2 | `soli_ta`, `flow_motion` (alone); `va_ta_vq` (va_ta + va_vq); `va_all` (va_ta + 0.5 va_vq + 0.5 va_mq) |
-| 3 | `va_ta_hps` (va_ta + 0.3 hps); `think_va_ta` (think_winrate + 0.5 va_ta) |
-
-The references are runs above, not duplicated here: `nft_hyperflow_64g` (the current mix_v1 reward) and
-`nft_hf_64g_quality` (quality_v2).
+Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 10 one-day runs, each on its
+own 64-GPU cluster (the `nft_hyperflow_64g` setup with only the reward changed; the `think_*` runs keep groups on one
+rank, 130 iterations): alone `va_ta`, `va_vq`, `hps`, `soli_ta`, `flow_motion`, `think_winrate`; combined `va_ta_vq`
+(va_ta + va_vq), `va_all` (va_ta + 0.5 va_vq + 0.5 va_mq), `va_ta_hps` (va_ta + 0.3 hps), `think_va_ta`
+(think_winrate + 0.5 va_ta). The references are runs above, not duplicated here: `nft_hyperflow_64g` (the current
+mix_v1 reward) and `nft_hf_64g_quality` (quality_v2). Start them in the order of "Priority" below.
 
 Launch each on its cluster: `bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/<name>.yaml`
 (outputs `runs/abl_<name>`, distinct ports). With the 4 recipes above that is 14 runs: 13 one-day runs and the ~2 h
@@ -186,6 +180,29 @@ change vs base in base-SD units, `*` for p < 0.05, `[ ]` around the terms the ru
 its own column *and* does not lower the others (especially `va_vq`, `va_mq`); a column that rises only for the run
 trained on it is a judge being gamed. Blind-check the 2-3 best rows: `python -m h3rl.eval.blind_pairs --dir
 runs/heldout_abl --arms base <name> --n 32` (see "Evaluating a run").
+
+### Priority
+
+Start the recipes in this order, as many at once as there are free 64-GPU clusters (`ablation/` = `configs/experiments/ablation/`):
+
+| # | Recipe | Why here |
+|---|---|---|
+| 1 | `nft_hf_64g_sanity_bright` | ~2 h gate: if the videos do not get clearly brighter, the trainer is broken; stop everything else and report. |
+| 2 | `nft_hf_64g_quality` | The main candidate: a sharper reward with quality floors. |
+| 3 | `ablation/va_ta` | Text alignment, the term every mix is built on: does it help on its own? |
+| 4 | `ablation/va_vq` | Visual quality, the term that fell in the mix runs: can it be raised directly? |
+| 5 | `nft_hf_64g_quality_kl` | Same reward as 2 with a real KL anchor: tells whether drift, not the reward, hides the gains. |
+| 6 | `ablation/va_ta_vq` | The simplest combination of 3 and 4, one judge family. |
+| 7 | `nft_hf_64g_pairwise` | Only if `scripts/reward_sanity.py --workers pairwise_think` passes. |
+| 8 | `ablation/think_winrate` | Same condition as 7: the pairwise judge alone. |
+| 9 | `ablation/va_all` | Adds motion quality (va_mq) to 6. |
+| 10 | `ablation/hps` | Aesthetics alone; likely to be gamed, which is itself worth knowing. |
+| 11 | `ablation/flow_motion` | Motion alone; the one term that moved held-out before, and the most likely to be gamed. |
+| 12 | `ablation/soli_ta` | The second text-alignment judge, which disagreed with va_ta. |
+| 13 | `ablation/va_ta_hps` | Alignment + aesthetics. |
+| 14 | `ablation/think_va_ta` | Same condition as 7: pairwise judge + alignment. |
+
+If the pairwise sanity check fails, skip 7, 8 and 14 and move the rest up.
 
 ## Held-out check
 

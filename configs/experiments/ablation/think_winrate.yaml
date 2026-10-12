@@ -1,4 +1,4 @@
-# Reward ablation, wave 1: Pairwise VLM judge alone (UnifiedReward-Think, both orders). Run reward_sanity.py on it first.
+# Reward ablation, priority 8 of 14 (README "Priority"): Pairwise VLM judge alone (UnifiedReward-Think, both orders). Run reward_sanity.py on it first.
 # 64 GPUs (8 nodes x 8), one day: as nft_hyperflow_64g but ranks_per_group 1 (group reward), so 48 groups per
 # iteration and ~2x slower: 130 iterations (the same rollouts as the other ablations). Runs in parallel with the others. See README "Reward ablation".
 #   bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/think_winrate.yaml [run.efa=true]
