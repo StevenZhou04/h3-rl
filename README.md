@@ -156,7 +156,7 @@ Evaluate each with "Evaluating a run" below.
 
 ### Reward ablation
 
-Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 12 one-day runs, each on its own 64-GPU
+Which judges are worth training on, alone or combined? `configs/experiments/ablation/` holds 10 one-day runs, each on its own 64-GPU
 cluster (the `nft_hyperflow_64g` setup with only the reward changed; the `think_*` runs keep groups on one rank, 130
 iterations), all in parallel. The waves are only a priority order if fewer clusters are free:
 
@@ -164,21 +164,25 @@ iterations), all in parallel. The waves are only a priority order if fewer clust
 |---|---|
 | 1 | `va_ta`, `va_vq`, `hps`, `think_winrate` (each alone) |
 | 2 | `soli_ta`, `flow_motion` (alone); `va_ta_vq` (va_ta + va_vq); `va_all` (va_ta + 0.5 va_vq + 0.5 va_mq) |
-| 3 | `mix_v1` (reference: the current mix); `quality_v2`; `va_ta_hps` (va_ta + 0.3 hps); `think_va_ta` (think_winrate + 0.5 va_ta) |
+| 3 | `va_ta_hps` (va_ta + 0.3 hps); `think_va_ta` (think_winrate + 0.5 va_ta) |
+
+The references are runs above, not duplicated here: `nft_hyperflow_64g` (the current mix_v1 reward) and
+`nft_hf_64g_quality` (quality_v2).
 
 Launch each on its cluster: `bash scripts/launch_multinode.sh hosts.txt configs/experiments/ablation/<name>.yaml`
-(outputs `runs/abl_<name>`, distinct ports). With the 4 full recipes above that is 16 one-day runs (the brightness
-sanity run is ~2 h). Run `scripts/reward_sanity.py --workers pairwise_think` before the
+(outputs `runs/abl_<name>`, distinct ports). With the 4 recipes above that is 14 runs: 13 one-day runs and the ~2 h
+brightness sanity run (plus the current `nft_hyperflow_64g` run). Run `scripts/reward_sanity.py --workers pairwise_think` before the
 `think_*` runs. Then, on one free 8-GPU node:
 
 ```bash
-bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* at its last iteration; rerun to add runs that finish later
-# (runs on other clusters: copy or mount their runs/abl_<name>/config.json and final nft-*.safetensors into runs/ first)
+bash scripts/ablation_eval.sh runs/heldout_abl 0,1,2,3,4,5,6,7      # every runs/abl_* and runs/nft_hf_64g* (not the brightness run) at its last iteration;
+# rerun to add runs that finish later. Runs on other clusters: copy or mount their config.json and final
+# nft-*.safetensors into runs/<run name>/ first
 ```
 
 It generates the 64 held-out prompts once with base and once per run (arms are named after the run), scores them, and
 prints one table (`runs/heldout_abl/ablation_table.txt`): a row per run, a column per judge, each cell the held-out
-change vs base in base-SD units, `*` for p < 0.05, `[ ]` around the terms the run was trained on. A good reward raises
+change vs base in base-SD units, `*` for p < 0.05, `[ ]` around the terms the run was trained on. The `nft_hf_64g` row (mix_v1) and the `nft_hf_64g_quality` row are the references. A good reward raises
 its own column *and* does not lower the others (especially `va_vq`, `va_mq`); a column that rises only for the run
 trained on it is a judge being gamed. Blind-check the 2-3 best rows: `python -m h3rl.eval.blind_pairs --dir
 runs/heldout_abl --arms base <name> --n 32` (see "Evaluating a run").

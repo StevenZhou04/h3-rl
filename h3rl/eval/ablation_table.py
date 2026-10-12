@@ -5,7 +5,7 @@ from the <dir>/scores_base_<arm>.json files that h3rl.eval.reward_check writes (
 
 Each cell is the mean paired difference (arm - base) over the held-out prompts, in units of the term's spread across
 base videos, so terms are comparable; '*' marks p < 0.05 (sign-flip permutation), '[ ]' the terms the arm was trained
-on (from configs/experiments/ablation/<arm>.yaml when present). Read across a row: did training on X move only X, or
+on (from the run's config.json, copied by ablation_eval.sh). Read across a row: did training on X move only X, or
 also the other judges, and which way? Written to <dir>/ablation_table.txt too."""
 import argparse, glob, json, os
 import numpy as np
@@ -14,7 +14,10 @@ from h3rl.eval.reward_check import TERMS, paired
 REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 
 
-def trained_terms(arm):
+def trained_terms(arm, d):
+    """The run's reward terms: from its config.json (ablation_eval.sh copies it to <dir>/ckpts), else the ablation config."""
+    c = f"{d}/ckpts/{arm}.config.json"
+    if os.path.exists(c): return set((json.load(open(c))["reward"].get("video") or {}).keys())
     p = os.path.join(REPO, "configs", "experiments", "ablation", f"{arm}.yaml")
     if not os.path.exists(p): return set()
     from omegaconf import OmegaConf
@@ -41,7 +44,7 @@ def main():
     terms = [t for t in TERMS if any(t in r for r in rows.values())]
     lines.append(f"{'arm (trained on)':<16}" + "".join(f"{t:>15}" for t in terms) + "     n")
     for arm, row in rows.items():
-        tr = trained_terms(arm); cells = []
+        tr = trained_terms(arm, a.dir); cells = []
         for t in terms:
             if t not in row: cells.append(f"{'-':>15}"); continue
             e, p, _ = row[t]; c = f"{e:+.2f}{'*' if p < 0.05 else ' '}"
