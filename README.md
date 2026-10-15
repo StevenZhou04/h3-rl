@@ -70,6 +70,21 @@ The repo, `run.out` and the text cache may live on storage the nodes share (NFS,
 (metrics, checkpoints) and node i > 0 writes `run.out/node<i>` (its reward queue, logs and rollouts), so nodes never
 write the same files. When launching from a machine other than the nodes, set `H3RL_REPO` to the repo path on the nodes.
 
+### Slurm
+
+On a Slurm node, submit `scripts/slurm_h3rl.sh` instead of calling the launcher. It trains on the GPUs of its
+allocation (reward workers on the first one) and resumes from the newest checkpoint in the output directory on every
+start, so a preempted job that Slurm requeues carries on where it stopped. A long job on a preemptible partition:
+
+```bash
+sbatch -p low --gres=gpu:4 -t 3:00:00 --requeue --signal=B:USR1 --open-mode=append -o runs/nft.slurm.log \
+  scripts/slurm_h3rl.sh $PWD/runs/nft configs/experiments/nft_mix.yaml run.iters=10 run.save_every=1
+```
+
+`run.save_every=1` saves every iteration, so a preemption costs at most one. Overrides go after the experiment as
+usual; `run.reward_gpus`, for one, moves the reward workers. Add your cluster's own flags (e.g. a required
+`--comment`). Single node only: for several nodes use `scripts/launch_multinode.sh`.
+
 ## Configs
 
 An experiment file names an algorithm config and a reward config and sets data and run options:
@@ -238,7 +253,7 @@ h3rl/rewards/           combine.py (combiners), registry.py, queue.py, worker_ba
 h3rl/data/encode.py     text-encoder cache for a prompt pool
 h3rl/eval/              held-out generation and scoring
 configs/                algo/, reward/, experiments/
-scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, heldout_eval.sh
+scripts/                setup_env.sh, download_weights.py, launch_multinode.sh, slurm_h3rl.sh, heldout_eval.sh
 envs/                   pinned package versions for the two environments
 tests/                  correctness tests
 ```
